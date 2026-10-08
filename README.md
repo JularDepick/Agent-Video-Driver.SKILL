@@ -26,9 +26,9 @@
 
 ## 参考成片
 
-[2026 诺贝尔化学奖: 不对称有机合成](./site/resource/video/2026-nobel-prize-in-chemistry-asymmetric-organocatalysis-explainer.mp4)
+<https://julardepick.github.io/Agent-Video-Driver.SKILL/>
 
-这条 108 秒的科普解说片由本技能从零做出来: 画面由代码逐帧算出来, 配乐由代码合成出来, 最后用 FFmpeg 编码封装, 全程没有使用任何视频生成模型. 也可以[在线观看](https://julardepick.github.io/Agent-Video-Driver.SKILL/).
+这条 108 秒的科普解说片由本技能从零做出来: 画面由代码逐帧算出来, 配乐由代码合成出来, 最后用 FFmpeg 编码封装, 全程没有使用任何视频生成模型. 视频在站点的参考成片区, 打开上面的地址即可播放.
 
 ## 能做什么
 

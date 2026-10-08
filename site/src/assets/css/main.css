@@ -37,6 +37,9 @@
   --tap: 44px;
   --nav-h: 60px;
   --mono: "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+  /* 视频封面上的文字面板: 虽然写在共用区, 但它有意固定为深色,
+     因为封面取自成片画面, 本身是深色的, 换亮色面板反而突兀 */
+  --poster-panel: rgba(4, 8, 16, 0.78);
 }
 
 /* ============================================================
@@ -318,14 +321,15 @@ code,
 .hero-inner {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--sp-6);
+  /* 间距统一交给 gap; 子元素不要再各写 margin, 否则两者叠加会让间距翻倍 */
+  gap: var(--sp-4);
 }
 
 .hero-badges {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  margin-bottom: var(--sp-5);
+  margin: 0;
 }
 
 .badge {
@@ -351,7 +355,8 @@ code,
 }
 
 .hero h1 {
-  margin: 0 0 var(--sp-4);
+  /* 与上方徽章合计 24px: gap 16 + 这里 8 */
+  margin: var(--sp-2) 0 0;
   font-size: clamp(30px, 4.6vw, 50px);
   line-height: 1.16;
   letter-spacing: -0.4px;
@@ -363,7 +368,7 @@ code,
 }
 
 .hero-tagline {
-  margin: 0 0 var(--sp-4);
+  margin: 0;
   max-width: var(--measure);
   color: var(--text);
   font-size: clamp(var(--fs-lg), 1.6vw, 20px);
@@ -371,7 +376,7 @@ code,
 }
 
 .hero-intro {
-  margin: 0 0 var(--sp-3);
+  margin: 0;
   max-width: var(--measure);
   color: var(--text-dim);
 }
@@ -380,7 +385,8 @@ code,
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-3);
-  margin-top: var(--sp-5);
+  /* 与上方正文合计 24px */
+  margin-top: var(--sp-2);
 }
 
 /* 按钮: 最小高度按可点区域给足, 不靠 padding 碰运气 */
@@ -527,15 +533,38 @@ section[id] {
 }
 
 .video-poster {
+  position: relative;
   display: flex;
   height: 100%;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-3);
   padding: var(--sp-5);
+  /* 封面图还没加载出来时的兜底底色 */
   background: var(--poster-bg);
   text-align: center;
+}
+
+/* 成片的真实一帧, 原亮度铺满, 让访客第一眼就看到成片长什么样 */
+.video-poster-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 深色面板压在画面之上: 画面内容不可控, 文字对比度只能靠这一层来保证 */
+.video-poster-body {
+  position: relative;
+  display: flex;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  border-radius: 12px;
+  background: var(--poster-panel);
+  padding: var(--sp-4) var(--sp-5);
 }
 
 .video-poster-kicker {
@@ -576,7 +605,7 @@ section[id] {
 .grid {
   display: grid;
   gap: var(--sp-4);
-  grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(268px, 100%), 1fr));
 }
 
 .card {
@@ -685,6 +714,7 @@ tbody tr:hover td {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
+  max-width: 100%;
   border: 1px solid var(--line-soft);
   border-radius: 10px;
   background: var(--code-bg);
@@ -693,6 +723,8 @@ tbody tr:hover td {
 
 .cmd-text {
   flex: 1;
+  /* flex 子项的 min-width 默认是 auto, 命令含长串不换行文本时会把整页撑宽 */
+  min-width: 0;
   overflow-x: auto;
   background: none;
   border: 0;
@@ -724,6 +756,11 @@ tbody tr:hover td {
 .cmd-stack {
   display: grid;
   gap: var(--sp-4);
+}
+
+/* grid 子项同样默认 min-width: auto, 里面套 flex 时也会溢出 */
+.cmd-stack > * {
+  min-width: 0;
 }
 
 .cmd-item h4 {
@@ -847,30 +884,94 @@ tbody tr:hover td {
   transform: translateY(8px);
 }
 
-@media (max-width: 860px) {
-  .nav-links {
-    order: 3;
-    width: 100%;
-    gap: var(--sp-4);
-    font-size: var(--fs-xs);
-  }
-
-  section[id] {
-    scroll-margin-top: calc(var(--nav-h) + var(--sp-7));
+/* 断点取 1024 / 768 / 400: 对应桌面, 平板, 手机, 小屏手机 */
+@media (min-width: 1024px) {
+  /* 条目型区块在桌面上拆两列, 单列时每行右侧会空出一大片 */
+  .flow,
+  .notes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 720px) {
-  .hero {
-    padding-top: var(--sp-7);
+@media (max-width: 1023px) {
+  /* 收紧导航, 让它在平板上仍排成一行 */
+  .nav-brand {
+    font-size: var(--fs-sm);
   }
 
-  .flow-row {
-    grid-template-columns: minmax(0, 1fr);
+  .nav-links {
+    gap: var(--sp-3);
+    font-size: var(--fs-xs);
+  }
+}
+
+@media (max-width: 767px) {
+  /* 手机上导航排两行: 第一行品牌与开关, 第二行链接横向滚动 */
+  .nav-links {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: var(--sp-4);
+    font-size: var(--fs-xs);
+    scrollbar-width: none;
+  }
+
+  .nav-links::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-links a {
+    flex: none;
+  }
+
+  /* 两行导航更高, 锚点跳转要多留上边距 */
+  section[id] {
+    scroll-margin-top: calc(var(--nav-h) + var(--sp-7));
+  }
+
+  .hero {
+    padding-top: var(--sp-6);
   }
 
   .block {
     padding: var(--sp-7) 0;
+  }
+
+  /* 技术栈徽章在手机上属次要信息, 依赖表里有同样内容, 先让位给主张与按钮 */
+  .hero-badges .badge:nth-child(n + 3) {
+    display: none;
+  }
+
+  /* GitHub 文字入口在手机上让位: 否则它会和品牌名互相挤, 把导航顶到第三行.
+     首屏有查看源码按钮, 页脚也有仓库链接, 功能不丢 */
+  .nav-tools .nav-ext {
+    display: none;
+  }
+
+  /* 手机上 16:9 的框只有不到 200px 高, 放不下海报面板(约 257px), 按钮会被裁掉.
+     海报状态让高度跟着内容走, 进入播放状态后再恢复 16:9 */
+  .video-frame {
+    aspect-ratio: auto;
+  }
+
+  .video-frame:has(.video-el) {
+    aspect-ratio: 16 / 9;
+  }
+}
+
+@media (max-width: 400px) {
+  /* 窄屏上缩小序号, 把宽度让给流程文字 */
+  .flow-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: var(--sp-3);
+    padding: var(--sp-3);
+  }
+
+  .flow-n {
+    width: 28px;
+    height: 28px;
+    font-size: var(--fs-xs);
   }
 }
 

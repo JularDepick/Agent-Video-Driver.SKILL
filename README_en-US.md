@@ -26,9 +26,9 @@ The core artifact is [`skills/agent-video-driver`](./skills/agent-video-driver),
 
 ## Showcase
 
-[2026 Nobel Prize in Chemistry: Asymmetric Organocatalysis](./site/resource/video/2026-nobel-prize-in-chemistry-asymmetric-organocatalysis-explainer.mp4)
+<https://julardepick.github.io/Agent-Video-Driver.SKILL/>
 
-This 108-second explainer was made from scratch by the skill: the picture is computed frame by frame in code, the score is synthesized in code, and FFmpeg does the final encoding, with no video model involved. You can also [watch it online](https://julardepick.github.io/Agent-Video-Driver.SKILL/).
+This 108-second explainer was made from scratch by the skill: the picture is computed frame by frame in code, the score is synthesized in code, and FFmpeg does the final encoding, with no video model involved. The video sits in the showcase section of the site; open the address above to play it.
 
 ## What it does
 
