@@ -1,0 +1,21 @@
+{
+  "name": "agent-video-driver-site",
+  "private": true,
+  "type": "module",
+  "description": "Agent-Video-Driver.SKILL \u7684\u9879\u76ee\u7ad9\u70b9",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "engines": {
+    "node": "^22.19.0 || ^24.11.0 || >=26.0.0"
+  },
+  "dependencies": {
+    "nuxt": "4.5.2",
+    "vue": "^3.5.0",
+    "vue-router": "^4.5.0"
+  }
+}

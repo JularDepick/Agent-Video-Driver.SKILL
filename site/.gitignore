@@ -1,0 +1,24 @@
+# 依赖
+node_modules/
+.npm-cache/
+.pnpm-store/
+
+# Nuxt 构建与缓存产物
+.nuxt/
+.output/
+dist/
+.data/
+.nitro/
+.cache/
+
+# 本地环境变量
+.env
+.env.*
+!.env.example
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-error.log*
