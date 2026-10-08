@@ -1,0 +1,78 @@
+# 构建 site/ 的 Nuxt 站点并把构建产物发布到 GitHub Pages
+name: 构建项目站点并部署到Pages
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'site/**'
+      - '.github/workflows/build-site-and-deploy-as-pages.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+jobs:
+  build:
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+      - name: 配置Node环境
+        uses: actions/setup-node@v4
+        with:
+          # 版本号取自 site/.nvmrc, 必须满足 site/package.json 的 engines 约束
+          node-version-file: 'site/.nvmrc'
+      - name: 安装依赖
+        working-directory: site
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+      - name: 构建静态产物
+        working-directory: site
+        run: npm run generate
+      - name: 校验产物
+        working-directory: site
+        run: |
+          set -eu
+          test -f dist/index.html
+          # github_pages 预设会产出 .nojekyll, 这里再兜一道底:
+          # 没有它 Jekyll 会跳过以下划线开头的 _nuxt/, 页面就没有样式与脚本了
+          test -f dist/.nojekyll || touch dist/.nojekyll
+          # 参考视频由 nitro.publicAssets 从 resource/ 带进产物, 这里兜底并强制校验
+          if ! ls dist/resource/video/*.mp4 >/dev/null 2>&1; then
+            mkdir -p dist/resource
+            cp -R resource/. dist/resource/
+          fi
+          ls dist/resource/video/*.mp4 >/dev/null 2>&1 || { echo "参考视频没有进入产物"; exit 1; }
+          echo "== dist 顶层 =="
+          ls -1 dist
+          echo "== 参考视频 =="
+          find dist/resource -type f -printf '%p  %s bytes\n'
+          echo "== 产物体积 =="
+          du -sh dist
+          echo "== baseURL 自检 (命中次数 > 0 才算通过) =="
+          grep -c 'Agent-Video-Driver.SKILL' dist/index.html
+      - name: 配置Pages环境
+        uses: actions/configure-pages@v5
+      - name: 上传内容
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './site/dist/'
+  deploy:
+    needs: build
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 部署到Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,51 @@
+# 发布技能包: Release 发布时把 skills/ 下的技能打成 zip 并挂到该 Release 的 assets
+name: 打包技能并上传到Release assets
+on:
+  release:
+    types: ["published"]
+permissions:
+  contents: write
+concurrency:
+  group: "release-skill"
+  cancel-in-progress: false
+jobs:
+  package:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取仓库
+        uses: actions/checkout@v4
+      - name: 打包 skills/ 下的技能
+        run: |
+          set -euo pipefail
+          ZIP="Agent-Video-Driver.SKILL.zip"
+          # 打包 skills/ 的下一层内容, 于是解压出来直接是 agent-video-driver/,
+          # 可以整个目录拷进技能目录, 与 README 的安装说明一致.
+          # 用 find 生成文件名并去掉前缀 ./, 避免压缩包里出现 ./
+          cd skills
+          find . -mindepth 1 -type f \
+            -not -path '*/__pycache__/*' -not -name '*.pyc' -not -name '.DS_Store' \
+            -printf '%P\n' | sort | zip -X -9 "../${ZIP}" -@
+          cd ..
+          # 打包自检: 压缩包非空, 且技能入口在里面
+          test -s "${ZIP}"
+          unzip -l "${ZIP}" | grep -q 'agent-video-driver/SKILL.md'
+          echo "== ${ZIP} 内容 =="
+          unzip -l "${ZIP}"
+          echo "== SHA256 =="
+          sha256sum "${ZIP}"
+          {
+            echo "### ${ZIP}"
+            echo ""
+            echo "打包自 \`skills/\`, 解压后为 \`agent-video-driver/\`"
+            echo ""
+            echo '```'
+            unzip -l "${ZIP}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: 上传到 Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            Agent-Video-Driver.SKILL.zip --clobber
