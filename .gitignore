@@ -1,0 +1,10 @@
+#Agent Runtime
+AGENTS.md
+
+# other when dev
+.agent/
+.agents/
+temp/
+tmp/
+reference/
+refer/
