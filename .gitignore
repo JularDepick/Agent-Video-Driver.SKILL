@@ -1,6 +1,10 @@
 #Agent Runtime
 AGENTS.md
 
+# python
+__pycache__/
+*.py[cod]
+
 # other when dev
 .agent/
 .agents/
@@ -8,3 +12,7 @@ temp/
 tmp/
 reference/
 refer/
+.workbuddy/
+
+# developer's special statement
+version.index.md
