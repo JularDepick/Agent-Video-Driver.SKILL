@@ -51,8 +51,6 @@ jobs:
             cp -R resource/. dist/resource/
           fi
           ls dist/resource/video/*.mp4 >/dev/null 2>&1 || { echo "参考视频没有进入产物"; exit 1; }
-          # 封面图被页面当作视频海报的底图引用, 缺了会在海报区留一块破图
-          ls dist/resource/video/*-cover.png >/dev/null 2>&1 || { echo "封面图没有进入产物"; exit 1; }
           echo "== dist 顶层 =="
           ls -1 dist
           echo "== 参考视频 =="

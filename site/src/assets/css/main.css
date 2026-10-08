@@ -37,9 +37,6 @@
   --tap: 44px;
   --nav-h: 60px;
   --mono: "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
-  /* 视频封面上的文字面板: 虽然写在共用区, 但它有意固定为深色,
-     因为封面取自成片画面, 本身是深色的, 换亮色面板反而突兀 */
-  --poster-panel: rgba(4, 8, 16, 0.78);
 }
 
 /* ============================================================
@@ -533,38 +530,15 @@ section[id] {
 }
 
 .video-poster {
-  position: relative;
   display: flex;
   height: 100%;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: var(--sp-3);
   padding: var(--sp-5);
-  /* 封面图还没加载出来时的兜底底色 */
   background: var(--poster-bg);
   text-align: center;
-}
-
-/* 成片的真实一帧, 原亮度铺满, 让访客第一眼就看到成片长什么样 */
-.video-poster-shot {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-/* 深色面板压在画面之上: 画面内容不可控, 文字对比度只能靠这一层来保证 */
-.video-poster-body {
-  position: relative;
-  display: flex;
-  max-width: 100%;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--sp-3);
-  border-radius: 12px;
-  background: var(--poster-panel);
-  padding: var(--sp-4) var(--sp-5);
 }
 
 .video-poster-kicker {
@@ -949,14 +923,14 @@ tbody tr:hover td {
     display: none;
   }
 
-  /* 手机上 16:9 的框只有不到 200px 高, 放不下海报面板(约 257px), 按钮会被裁掉.
-     海报状态让高度跟着内容走, 进入播放状态后再恢复 16:9 */
-  .video-frame {
-    aspect-ratio: auto;
+  /* 手机上 16:9 的框不到 200px 高, 海报内容必须收紧, 否则确认按钮会被裁掉 */
+  .video-poster {
+    gap: var(--sp-2);
+    padding: var(--sp-4);
   }
 
-  .video-frame:has(.video-el) {
-    aspect-ratio: 16 / 9;
+  .video-poster-note {
+    margin-bottom: 0;
   }
 }
 
@@ -972,6 +946,15 @@ tbody tr:hover td {
     width: 28px;
     height: 28px;
     font-size: var(--fs-xs);
+  }
+
+  /* 最窄一档再收一层海报内边距, 并让标题压到一行, 否则两行标题会把确认按钮顶出框外 */
+  .video-poster {
+    padding: var(--sp-3);
+  }
+
+  .video-poster-title {
+    font-size: var(--fs-base);
   }
 }
 

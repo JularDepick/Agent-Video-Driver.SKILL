@@ -155,4 +155,6 @@ This repository uses the [Apache-2.0](./LICENSE) license.
 
 ## Links
 
-- https://github.com/Win-Hao/knowledge-video
+- Open-source local-first conversational AI video editor with a multi-track timeline: https://github.com/0xsline/OpenChatCut/
+- Agent skill that renders motion-graphic films from pure code: https://github.com/HRuiCcc/RuiC-motion-reel/
+- Agent skill that turns one topic into a knowledge explainer video: https://github.com/Win-Hao/knowledge-video/

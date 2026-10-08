@@ -67,9 +67,9 @@ site/
 
 ## 资源
 
-参考成片与它的封面图都放在 `resource/video/` 下, 页面用相对目录引入, 不重复拷进 `public/`. `nuxt.config.ts` 的 `nitro.publicAssets` 把 `resource/` 挂成 `/resource`, 视频文件名含连字符与长单词, 页面侧统一由 `src/composables/useAssetUrl.ts` 拼路径并做 URL 编码.
+参考成片放在 `resource/video/` 下, 页面用相对目录引入, 不重复拷进 `public/`. `nuxt.config.ts` 的 `nitro.publicAssets` 把 `resource/` 挂成 `/resource`, 视频文件名含连字符与长单词, 页面侧统一由 `src/composables/useAssetUrl.ts` 拼路径并做 URL 编码.
 
-封面图与视频同名, 只把后缀换成 `-cover.png`, 由 ffmpeg 从成片里抽一帧生成, 页面侧也是按这个规则推导出来的, 所以换视频时只要同名的封面在, 不必再改一处引用. 它只给站点的视频海报作真实画面底; 主 `../README.md` 与 `../README_en-US.md` 的参考成片区不引用仓库内的视频文件, 只放在线演示的地址, 原因见下. 海报上的文字压在一层固定深色的半透明面板上, 因为成片画面内容不可控, 对比度只能靠这一层保证. 手机上视频框的高度在未播放时跟着内容走, 播放后再收回 16:9, 原因见下.
+视频海报不引用任何成片画面, 也不使用封面图, 只用 `src/assets/css/main.css` 的 `--poster-bg` 渐变作底, 两套主题各一份取值. 主 `../README.md` 与 `../README_en-US.md` 的参考成片区不引用仓库内的视频文件, 只放在线演示的地址, 原因见下.
 
 ## 本地开发
 
@@ -116,7 +116,7 @@ npm run generate
 | 水平内边距自适应 | `--gutter: clamp(20px, 5vw, 48px)`, 窄屏 20px 宽屏 48px |
 | 长文行宽受限 | `--measure: 68ch`, 避免大屏上文字边到边 |
 | 移动端不横向滚动 | 每个区块都套 `.wrap`, 宽表格交给 `.table-wrap` 局部滚动 |
-| 预留尺寸避免加载抖动 | `.video-frame` 用 `aspect-ratio: 16 / 9`; 手机上海报状态例外, 高度跟随内容, 否则 16:9 的框放不下海报面板会裁掉确认按钮, 进入播放后由 `:has(.video-el)` 收回 16:9 |
+| 预留尺寸避免加载抖动 | `.video-frame` 用 `aspect-ratio: 16 / 9` |
 | 锚点跳转不被吸顶导航遮挡 | `section[id]` 的 `scroll-margin-top` 留出导航高度 |
 | 无横向滚动 | 命令行文本与 `.cmd-stack` 子项显式设 `min-width: 0`; 卡片网格用 `minmax(min(268px, 100%), 1fr)` |
 | 手机首屏一屏内 | 手机宽度下隐藏技术栈徽章与导航里的 GitHub 文字入口, 主题与滚动条开关保留 |
