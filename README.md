@@ -5,6 +5,7 @@
 [![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/main)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
+[![Website](https://img.shields.io/badge/Website-online-38BDF8)](https://julardepick.github.io/Agent-Video-Driver.SKILL/)
 
 [English](./README_en-US.md) |
 [简体中文]
@@ -22,6 +23,12 @@
 覆盖通用内容场景: 科普讲解片, 产品宣传片, 数据动画, 片头片尾, 年度回顾.
 
 核心产物是 [`skills/agent-video-driver`](./skills/agent-video-driver), 一份可直接装进技能目录的 SKILL bundle.
+
+## 参考成片
+
+[2026 诺贝尔化学奖: 不对称有机合成](./site/resource/video/2026-nobel-prize-in-chemistry-asymmetric-organocatalysis-explainer.mp4)
+
+这条 108 秒的科普解说片由本技能从零做出来: 画面由代码逐帧算出来, 配乐由代码合成出来, 最后用 FFmpeg 编码封装, 全程没有使用任何视频生成模型. 也可以[在线观看](https://julardepick.github.io/Agent-Video-Driver.SKILL/).
 
 ## 能做什么
 
@@ -95,6 +102,8 @@ python scripts/qa.py out/成片.mp4 --plan temp/plan.json
 
 把整个 [`skills/agent-video-driver`](./skills/agent-video-driver) 目录拷进你的技能目录即可, 发现深度只有一层.
 
+也可以直接从 [Releases](https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases) 下载 `Agent-Video-Driver.SKILL.zip`, 解压出来的 `agent-video-driver/` 直接可用.
+
 也可以把这一句交给任何编程 Agent:
 
 ```
@@ -108,6 +117,7 @@ python scripts/qa.py out/成片.mp4 --plan temp/plan.json
 ```
 Agent-Video-Driver.SKILL/
 ├── .github/                    # GitHub Actions 工作流
+├── site/                       # 项目站点, 说明见 site/README.md
 ├── skills/
 │   └── agent-video-driver/     # 核心产物, 技能本体
 ├── COPYRIGHT                   # 版权文件

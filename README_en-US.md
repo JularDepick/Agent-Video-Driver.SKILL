@@ -5,6 +5,7 @@
 [![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/main)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
+[![Website](https://img.shields.io/badge/Website-online-38BDF8)](https://julardepick.github.io/Agent-Video-Driver.SKILL/)
 
 [English] |
 [简体中文](./README.md)
@@ -22,6 +23,12 @@ It uses no stock library and no editing software. The picture is computed frame 
 It covers general content: explainers, product promos, data animations, intros and outros, year-in-review pieces.
 
 The core artifact is [`skills/agent-video-driver`](./skills/agent-video-driver), a SKILL bundle you can drop into your skills directory.
+
+## Showcase
+
+[2026 Nobel Prize in Chemistry: Asymmetric Organocatalysis](./site/resource/video/2026-nobel-prize-in-chemistry-asymmetric-organocatalysis-explainer.mp4)
+
+This 108-second explainer was made from scratch by the skill: the picture is computed frame by frame in code, the score is synthesized in code, and FFmpeg does the final encoding, with no video model involved. You can also [watch it online](https://julardepick.github.io/Agent-Video-Driver.SKILL/).
 
 ## What it does
 
@@ -95,6 +102,8 @@ The default route needs no browser, no Node.js and no stock library. `python scr
 
 Copy the whole [`skills/agent-video-driver`](./skills/agent-video-driver) directory into your skills directory. Discovery depth is one level.
 
+You can also download `Agent-Video-Driver.SKILL.zip` from [Releases](https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases); the `agent-video-driver/` it unpacks to is ready to use as is.
+
 Or hand this line to any coding agent:
 
 ```
@@ -106,6 +115,7 @@ Install the agent-video-driver skill from https://github.com/JularDepick/Agent-V
 ```
 Agent-Video-Driver.SKILL/
 ├── .github/                    # GitHub Actions workflows
+├── site/                       # Project site, see site/README.md
 ├── skills/
 │   └── agent-video-driver/     # Core artifact, the skill bundle
 ├── COPYRIGHT                   # Copyright file
