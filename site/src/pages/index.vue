@@ -35,7 +35,7 @@
       anchor="features"
       kicker="Features"
       title="技能里有什么"
-      lead="十四份方法论文档加二十八个脚本, 覆盖从拿到主题到交出成片的每一步."
+      lead="十六份方法论文档加三十一个脚本, 覆盖从拿到主题到交出成片的每一步."
     >
       <div class="grid">
         <article v-for="([name, desc], i) in CAPABILITIES" :key="i" class="card">
@@ -48,7 +48,7 @@
     <SectionBlock
       anchor="flow"
       kicker="Pipeline"
-      title="八个阶段, 两道确认门"
+      title="九个阶段, 两道确认门"
       lead="开工前确认一次 (代价, 配色, 确认模式, 是否分批, 署名, 命名), 全量渲染与最终合成前各再确认一次; 重活之前先探测核数, 负载, 内存与磁盘, 按实测限额跑. 交付节点不可省略: 配色与抽到的风格牌先合成一个方向, 出两张带色值的样图, 全量渲染前再出开头约 10 秒的带音轨样片; 每个节点都先交文件路径, 等你看完给出回执再往下走."
     >
       <div class="flow">
@@ -92,7 +92,7 @@
       anchor="start"
       kicker="Quick start"
       title="装好之后先说一句话"
-      lead="技能被触发后, Agent 会先做环境探测, 再走启动确认门问你时长与分辨率, 配色, 确认模式, 是否分批, 是否需要署名与交付命名, 拿到答复才开工."
+      lead="技能被触发后, Agent 会先做环境探测, 再走启动确认门问你时长与分辨率, 配色, 确认模式, 是否分批, 是否需要署名与交付命名, 拿到答复才开工; 之后全部按确认单执行, 中途只在重活前再确认资源."
     >
       <div class="cmd-stack">
         <CopyCommand command="用 agent-video-driver 做一条 60 秒的科普解说片, 主题是坐标系为什么有用" />
