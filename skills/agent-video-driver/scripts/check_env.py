@@ -101,6 +101,33 @@ def main():
                                       "" if f in flt else "缺失, 验收或颗粒处理受影响"))
 
     print("-" * 62)
+    print("硬件编码探测")
+    # 判断依据一律用 ffmpeg -encoders 的输出: *_nvenc 只要显卡驱动, 不需要单独装 CUDA Toolkit,
+    # 所以 CUDA 版本号与 nvcc 都不能作为能不能硬件编码的依据
+    hw = [("h264_nvenc", "NVIDIA NVENC"), ("hevc_nvenc", "NVIDIA NVENC"),
+          ("av1_nvenc", "NVIDIA NVENC"), ("h264_qsv", "Intel Quick Sync"),
+          ("h264_amf", "AMD AMF"), ("h264_vaapi", "VAAPI")]
+    hw_found = [(name, vendor) for name, vendor in hw if name in out]
+    if hw_found:
+        print("%s 可用硬件编码器 %s" % (OK, ", ".join("%s (%s)" % (n, v) for n, v in hw_found)))
+        print("    结论: 可以走 GPU 路线, 但换编码器不等于给同一个编码器加开关:")
+        print("          x264 是纯 CPU 编码器, CUDA 加速不了它; 用 NVENC 是换成另一个编码器,")
+        print("          画质与体积都会变, 换之前先量 PSNR, 并用 scripts/bench_encode.py 对比")
+    else:
+        print("%s 未检测到硬件编码器, 编码走 CPU 路线 (libx264), 这是默认口径" % NO)
+        print("    这不是缺陷: 本技能的验收判据 (PSNR, 体积, 真峰) 都按 CPU 路线标定")
+    if shutil.which("nvidia-smi"):
+        gok, gout = run("nvidia-smi", ["--query-gpu=name,driver_version,memory.total",
+                                       "--format=csv,noheader"])
+        if gok and gout.strip():
+            for line in gout.strip().splitlines():
+                print("%s 显卡 %s" % (OK, line.strip()))
+        else:
+            print("%s 有 nvidia-smi 但取不到显卡信息" % NO)
+    else:
+        print("    nvidia-smi 不在 PATH, 跳过显卡信息 (有 NVENC 也只需要显卡驱动)")
+
+    print("-" * 62)
     print("Python %s" % sys.version.split()[0])
     for mod in ("numpy", "PIL"):
         try:

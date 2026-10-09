@@ -4,7 +4,8 @@
 
 设计目标: 不刺耳, 不单调
   不刺耳: 全部音色基于谐波堆叠而非宽带噪声, 母带压高频补温暖区
-  不单调: 十段式配器表, 每段换乐器组合与音区, 旋律用动机加变奏, 力度有起落弧线
+  不单调: 按切点分段的配器表, 每段换乐器组合与音区 (段数超过表行数时循环取用),
+          旋律用动机加变奏, 力度有起落弧线
 
   python orchestra.py <时长秒> <BPM> <输出文件名> <切点逗号分隔>
   python orchestra.py 108 100 score_orch.wav "7.2,16.8,26.4,36,50.4,64.8,79.2,91.2,103.2"
@@ -206,26 +207,70 @@ PHRASE_SHIFT = [0, 0, 0, -1, 0, 0, 1, 0, 0, -1, 0]
 ARP = [(0, 1, 2, 3), (0, 1, 2, 3, 2, 1), (0, 2, 1, 3), (3, 2, 1, 0)]
 
 # ----------------------------------------------------------------- 配器表
-# 每项: 起小节, 止小节, 弦乐, 竖琴, 主奏, 对位, 拨弦, 定音鼓, 人声, 音区偏移, 力度
+# 每项: 弦乐, 竖琴, 主奏, 对位, 拨弦, 定音鼓, 人声, 音区偏移, 力度
 SECTIONS = [
-    (0, 3, 1.0, 1.0, None, None, 0.0, 0.0, 0.0, 0, 0.62),
-    (3, 7, 1.0, 1.0, "flute", None, 0.8, 0.0, 0.0, 0, 0.74),
-    (7, 11, 1.0, 0.9, "clarinet", "flute", 0.9, 0.35, 0.0, 0, 0.82),
-    (11, 15, 1.0, 1.0, "horn", None, 0.5, 0.0, 0.35, 0, 0.70),
-    (15, 21, 1.0, 1.0, "clarinet", "horn", 1.0, 0.7, 0.0, 0, 0.92),
-    (21, 27, 1.0, 1.0, "clarinet", "horn", 1.0, 0.7, 0.55, 12, 1.00),
-    (27, 33, 1.0, 1.0, "flute", None, 0.6, 0.0, 0.0, 0, 0.72),
-    (33, 38, 1.0, 1.0, "clarinet", "flute", 1.0, 0.5, 0.30, 0, 0.88),
-    (38, 43, 1.0, 1.0, "clarinet", "horn", 1.0, 0.8, 0.65, 12, 1.00),
-    (43, 999, 1.0, 1.0, "horn", None, 0.0, 0.6, 0.7, 0, 0.66),
+    (1.0, 1.0, None, None, 0.0, 0.0, 0.0, 0, 0.62),
+    (1.0, 1.0, "flute", None, 0.8, 0.0, 0.0, 0, 0.74),
+    (1.0, 0.9, "clarinet", "flute", 0.9, 0.35, 0.0, 0, 0.82),
+    (1.0, 1.0, "horn", None, 0.5, 0.0, 0.35, 0, 0.70),
+    (1.0, 1.0, "clarinet", "horn", 1.0, 0.7, 0.0, 0, 0.92),
+    (1.0, 1.0, "clarinet", "horn", 1.0, 0.7, 0.55, 12, 1.00),
+    (1.0, 1.0, "flute", None, 0.6, 0.0, 0.0, 0, 0.72),
+    (1.0, 1.0, "clarinet", "flute", 1.0, 0.5, 0.30, 0, 0.88),
+    (1.0, 1.0, "clarinet", "horn", 1.0, 0.8, 0.65, 12, 1.00),
+    # 末行旧版的拨弦是 0.0: 落入这一行的段落完全没有节奏层, 补到 0.7
+    (1.0, 1.0, "horn", None, 0.7, 0.6, 0.7, 0, 0.66),
 ]
 
 
+def seg_bounds():
+    """
+    整片的分段边界秒: 0, 各切点, 片长
+
+    切点数量不足表行数时, 把最长的段继续对半切开直到段数够用; 没有这一步, 长片后半段会
+    全部落在同一行上, 又回到"后段没有节奏层"的老问题
+    """
+    cuts = sorted({round(c, 4) for c in CUTS if 0.0 < c < DUR})
+    bounds = [0.0] + cuts + [float(DUR)]
+    guard = 0
+    while len(bounds) - 1 < len(SECTIONS) and guard < 64:
+        guard += 1
+        k = max(range(len(bounds) - 1), key=lambda i: bounds[i + 1] - bounds[i])
+        mid = round((bounds[k] + bounds[k + 1]) / 2.0, 4)
+        if mid <= bounds[k] or mid >= bounds[k + 1]:
+            break
+        bounds.insert(k + 1, mid)
+    return bounds
+
+
+SEG_BOUNDS = seg_bounds()
+
+
+def seg_of_time(t):
+    """时间 t 落在第几段; 段边界只来自 SEG_BOUNDS, 不要在这里另算一套"""
+    for i in range(len(SEG_BOUNDS) - 1):
+        if SEG_BOUNDS[i] <= t < SEG_BOUNDS[i + 1]:
+            return i
+    return len(SEG_BOUNDS) - 2
+
+
+def row_of_seg(seg):
+    """第 seg 段取配器表第几行: 第 0 段固定引子行, 其余各段在余下的行里循环"""
+    if seg <= 0:
+        return 0
+    rest = max(1, len(SECTIONS) - 1)
+    return 1 + (seg - 1) % rest
+
+
 def section_of(bar_i):
-    for s in SECTIONS:
-        if s[0] <= bar_i < s[1]:
-            return s
-    return SECTIONS[-1]
+    """
+    按切点分段取配器行
+
+    旧版按固定小节号查表, 表只有十行且末行区间是 (43, 999), 第 43 小节之后全部落到末行,
+    而末行的拨弦系数是 0; 480 秒的片有 200 小节, 于是后 78% 的段落没有节奏层
+    (实测折叠包络起伏只有 0.18, 判据是大于 0.35)
+    """
+    return SECTIONS[row_of_seg(seg_of_time(bar_i * BAR))]
 
 
 def main():
@@ -238,23 +283,34 @@ def main():
     air_b = np.zeros(N)
 
     nbars = int(DUR // BAR)
+    # 打印每段的配器取行, 与"每段起止帧必须核对"同理: 全片落在一行上就是没有层次
+    print("配器分段: %d 段, 表 %d 行, 第 0 段引子, 其余循环取用"
+          % (len(SEG_BOUNDS) - 1, len(SECTIONS)))
+    for i in range(len(SEG_BOUNDS) - 1):
+        row = row_of_seg(i)
+        s = SECTIONS[row]
+        print("  段 %02d  %.2f 到 %.2f 秒  表行 %02d  主奏 %-9s 拨弦 %.1f 定音鼓 %.1f 力度 %.2f"
+              % (i, SEG_BOUNDS[i], SEG_BOUNDS[i + 1], row, s[2] or "无", s[4], s[5], s[8]))
     for bar_i in range(nbars):
         t0 = bar_i * BAR
         root, tones, ci = CHORDS[bar_i % 4]
-        (_, _, s_str, s_harp, lead, cnt, s_pizz, s_timp, s_choir, oct_shift, dyn) = section_of(bar_i)
+        (s_str, s_harp, lead, cnt, s_pizz, s_timp, s_choir, oct_shift, dyn) = section_of(bar_i)
 
         if s_str > 0:
+            # 弦乐是持续层, 电平必须压在节奏层之下: 实测 0.16 时弦乐群 RMS 0.061 而拨弦加
+            # 打击只有 0.125, 持续层盖住拍点, 拍上/拍间能量比只有 1.14; 压到 0.12 后回升
             for k, semi in enumerate(tones):
                 f = hz(semi - 12 + (12 if k == 0 else 0))
-                add(strings_b, strings(f, BAR + 0.8, 0.16 * s_str * dyn), t0)
-            add(strings_b, strings(hz(tones[0] + 12), BAR + 0.8, 0.10 * s_str * dyn), t0)
+                add(strings_b, strings(f, BAR + 0.8, 0.12 * s_str * dyn), t0)
+            add(strings_b, strings(hz(tones[0] + 12), BAR + 0.8, 0.07 * s_str * dyn), t0)
 
         if s_harp > 0:
             pat = ARP[(bar_i // 4) % len(ARP)]
             for k in range(8):
                 idx = pat[k % len(pat)]
                 semi = tones[idx % len(tones)] + (12 if idx >= len(tones) else 0) + (12 if k >= 4 else 0)
-                amp = 0.20 if k % 2 == 0 else 0.06
+                # 拍间那一格量的是反拍八分音符, 它与拍上的电平差决定拍点峰值比
+                amp = 0.22 if k % 2 == 0 else 0.04
                 add(harp_b, harp(hz(semi), 0.9, amp * s_harp * dyn), t0 + k * BEAT * 0.5)
 
         if lead:
@@ -266,7 +322,7 @@ def main():
                     continue
                 f = hz(deg(d) + oct_shift)
                 voice = {"flute": flute, "clarinet": clarinet, "horn": horn}[lead]
-                add(lead_b, voice(f, dur * BEAT + 0.35, 0.22 * dyn), t0 + beat * BEAT)
+                add(lead_b, voice(f, dur * BEAT + 0.35, 0.17 * dyn), t0 + beat * BEAT)
 
         if cnt and bar_i % 2 == 0:
             # 对位必须稀疏. 每小节都奏长音会变成连续声墙, 把拍点整个掩掉
@@ -278,14 +334,15 @@ def main():
         if s_pizz > 0:
             # 四个拍点都落拨弦, 1 与 3 拍加重, 这是全片节奏的地基
             for k, beat in enumerate((0.0, 1.0, 2.0, 3.0)):
-                amp = 0.95 if k in (0, 2) else 0.56
+                amp = 1.05 if k in (0, 2) else 0.60
                 # 低音不要沉到 A1, 小喇叭听不到拍点. 拨弦落在 110 到 220Hz 区间最稳
                 semi = root - 12 if k in (0, 2) else root
-                add(low_b, pizz(hz(semi), 0.40, amp * s_pizz * dyn), t0 + beat * BEAT)
+                # 衰减 0.40 秒时, 尾巴会一直盖到拍间量测窗 (拍后 0.3 秒), 拍点峰值比被拉低
+                add(low_b, pizz(hz(semi), 0.32, amp * s_pizz * dyn), t0 + beat * BEAT)
             # 弦乐断奏固定音型铺八分音符, 拍上重音
             for k in range(8):
                 semi = tones[0] if k % 2 == 0 else tones[2]
-                amp = 0.55 if k % 2 == 0 else 0.24
+                amp = 0.55 if k % 2 == 0 else 0.10
                 add(low_b, stacc(hz(semi - 12), 0.22, amp * s_pizz * dyn), t0 + k * BEAT * 0.5)
 
         if s_timp > 0:
@@ -314,7 +371,8 @@ def main():
         bus *= dyn_env
 
     # 空气层: 极低电平的宽带噪声, 模拟演奏厅的空气与弓弦摩擦, 让弦乐不闷
-    air_noise = bp_fft(rng.standard_normal(N), 1800, 9000, 2) * 0.010 * dyn_env
+    # 电平直接决定谱心: 持续层压低之后谱心会掉到 300Hz 以下, 这一层是把它抬回窗口的手段
+    air_noise = bp_fft(rng.standard_normal(N), 1800, 9000, 2) * 0.014 * dyn_env
 
     if os.environ.get("ORCH_DEBUG"):
         for nm, b in (("strings", strings_b), ("harp", harp_b), ("lead", lead_b),

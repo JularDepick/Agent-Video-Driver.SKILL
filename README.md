@@ -41,11 +41,11 @@
 | 画面引擎 | 超采样画布抗锯齿, 缓动与节拍原语, 字号反解与字高对齐, 字距与逐字错帧, 落位压印, 发光与加性光晕, 通用 UI 组件 |
 | 立体与印刷 | 纯 Python 3D 点云渲染与隐藏线刻版; 印刷与 riso 路线的纸底, 网点, 分色, 乘法叠印与套印偏移 |
 | 风格牌堆 | 17 张可直接落地的风格牌, 缺省抽签并支持排除上一条, 牌面落成项目里的 `STYLE.md` |
-| 配乐引擎 | 管弦乐与电子两套音色库, 十段式配器表避免单调, 暖调母带链含过采样真峰压制 |
+| 配乐引擎 | 管弦乐与电子两套音色库, 配器表按切点分段取用 (长片后段同样有节奏层), 暖调母带链含过采样真峰压制 |
 | 用户自备音乐 | 反推拍表, 找无接缝小节, 按小节剪接且接缝落在精确的小节线上, 剪完复测拍表 |
 | 无视觉验收 | 字符图构图核对, 前后帧对比, 计划抽帧总览, GIF 运动预览, 亮度对参考片标定, 字形体检, 逐帧差分, PSNR, 从成片解码回来量真峰 |
-| 编码封装 | 帧序列编码, 混音, 响度归一, 真峰验收, 流信息与画质质检, 一条命令跑完 |
-| 流程安全门 | 开工前一次启动确认, 全量渲染与最终合成前各再确认一次; 重活先探测核数, 负载, 内存与磁盘, 按限额跑, 不按满核跑 |
+| 编码封装 | 帧序列编码, 混音, 响度归一, 真峰验收, 流信息与画质质检; 长片走分批路线: 断点续跑, `--redo` 只重编指定批次, 配套只读进度前端轮询状态文件; 可选硬件编码器, 并附编码路线对比工具 (先分离解码与滤镜与编码三段开销) |
+| 流程安全门 | 开工前一次启动确认 (代价, 配色, 确认模式, 是否分批, 署名, 命名), 全量渲染与最终合成前各再确认一次; 重活先探测核数, 负载, 内存与磁盘, 按限额跑, 不按满核跑; 任何要用户拍板的节点都先交产物路径再提问 |
 | 工程脚手架 | 一条命令起工程: 建目录, 把脚本复制成工程内的自包含副本, 生成四份骨架并写好顶部常量 |
 
 ## 工作流程
@@ -57,7 +57,7 @@
 
 每个阶段都落一个可检查的产物再往下走. 前三个阶段与用户往返, 确认模式可选逐步确认或一次确认.
 
-两个不可省略的交付节点: 风格缺省抽签, 抽到的牌各出一张第一屏样图让用户确认; 全量渲染前先出开头约 10 秒的连续预览让用户确认.
+不可省略的交付节点: 配色先由用户拍板 (给三到五个色相方向挑, 或直接给主色), 风格缺省抽签, 配色与抽到的牌合成一个方向后出两张带色值的样图 (标题卡加该方向最典型的演示屏) 交用户回执; 全量渲染前再出开头约 10 秒的带音轨连续样片, 交出文件路径等回执. 每个节点都是先交产物再提问, 静态帧判断不了节奏与转场.
 
 ## 快速开始
 
@@ -84,13 +84,19 @@ python scene_module.py plan
 python scripts/resources.py --for render --frames 3240
 python scene_module.py render 0 810
 python scripts/resources.py --for encode --frames 3240 --out-dir out
-pwsh -File scripts/assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4 -ProbeOnly
-pwsh -File scripts/assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4 -ConfirmAssembly
+powershell -ExecutionPolicy Bypass -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4 -ProbeOnly
+powershell -ExecutionPolicy Bypass -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4 -ConfirmAssembly
 python scripts/qa.py out/成片.mp4 --plan temp/plan.json
 ```
 
 `new_project.py` 会把脚本复制成工程内的自包含副本并生成四份骨架, 之后在工程目录里跑即可; 手工起工程时, `script.md` 与 `scene_module.py` 从 `templates/` 里复制后填写, 见 `templates/screen-script.md` 与 `templates/scene_module.py`.
-只装了 Windows PowerShell 5.1 的机器把命令里的 `pwsh` 换成 `powershell`, 脚本在两者下都能跑.
+只装了 Windows PowerShell 5.1 的机器不要写 `pwsh` (根本不存在), 并且务必带 `-ExecutionPolicy Bypass`, 否则默认执行策略会拦下未签名脚本; 换成 `pwsh` 时同样保留 `-File` 形式.
+长片把最后两条命令换成分批路线, 进度另开一个终端看:
+
+```
+python scripts/assemble_core.py --frames temp\frames_proj --audio audio\score.wav --out out\成片.mp4 --batches 8 --preset medium --yes
+python scripts/assemble_progress.py --watch
+```
 
 ## 需要什么
 

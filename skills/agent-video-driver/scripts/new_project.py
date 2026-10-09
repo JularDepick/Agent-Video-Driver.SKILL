@@ -18,6 +18,14 @@ import re
 import shutil
 import sys
 
+# Windows 的中文控制台默认是 GBK: 遇到打不出来的字符 (例如子进程输出里被替换成的 U+FFFD)
+# print 会直接抛 UnicodeEncodeError 把起工程这一步中断, 所以先把输出流的编码错误降级
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL = os.path.dirname(HERE)
 SCRIPTS = os.path.join(SKILL, "scripts")
@@ -88,6 +96,12 @@ def patch_scene_module(text, bpm, dur, fps, prefix):
                       text, count=1)
     if n != 1:
         raise RuntimeError("模板里找不到 SCENES 常量, 先确认 templates/scene_module.py 是否改过")
+    # 新工程的每幕按一屏起步, 幕内确实有多屏时由写场景的人改这个表, 或让 plan.json 接管
+    text, n = re.subn(r"(?m)^SCREEN_COUNT = \[.*\]$",
+                      "SCREEN_COUNT = [%s]" % ", ".join(["1"] * max(1, n_seg)),
+                      text, count=1)
+    if n != 1:
+        raise RuntimeError("模板里找不到 SCREEN_COUNT 常量, 先确认 templates/scene_module.py 是否改过")
 
     # 帧率与画布也在顶部一次定下来, 免得后面靠默认值猜
     pat = r'cv\.configure\(BPM=BPM, DUR=DUR, FRAMES=os\.path\.join\("temp", "[^"]*"\)\)'
@@ -130,8 +144,12 @@ def write_style(project, style_id, seed, tone=None):
     import subprocess
     # 必须显式给 encoding: Windows 上 text=True 会按系统代码页(GBK)解码子进程输出,
     # 而抽签脚本打印的是 UTF-8 中文, 读线程会直接抛 UnicodeDecodeError
+    # 子进程那一侧也要强制 UTF-8 输出: 只指定解码方式而不管编码方式, 在 GBK 控制台下
+    # 拿到的是被替换过的 U+FFFD, 再打回控制台就会抛 UnicodeEncodeError 中断起工程
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     p = subprocess.run(cmd, cwd=project, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", env=env)
     if p.returncode != 0:
         print("提示: 抽风格没成功 (%s)" % ((p.stderr or p.stdout or "").strip()[:120]))
     elif (p.stdout or "").strip():

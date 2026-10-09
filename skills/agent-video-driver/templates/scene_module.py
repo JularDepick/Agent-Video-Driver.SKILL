@@ -17,6 +17,9 @@ plan 不给进程数时取 scripts/resources.py 的建议, 导入不到就退回
   2 本文件顶部的 SEG 常量
 无论用哪一种, 渲染前都要跑一次 segments 打印起止帧核对
 
+一个场景函数对应一幕, 不是一屏: 幕内有多屏时必须在函数内部用 sub(t) 取当前屏序再分支,
+不分支的话同幕第二屏会被第一屏的画法整个盖掉, 上屏内容永远不出现, 而且不报错.
+
 逐场审阅的顺序建议: 底板与环境光 -> 主体 -> 运动 -> 版面家具, 每一档先用 at 看一帧,
 一段做完用 stills 抽多帧看时间轴, 最后才跑 probe 与全量渲染.
 """
@@ -56,6 +59,10 @@ WORKERS_MAX = 4
 # 段落调度边界, 与音乐栅格 SEG 是两件事
 # 没有 plan.json 时用这份演示值: 3 个场景函数对应 3 段
 SEG_OF_DEMO = [0.0, SEG[1], SEG[2], DUR]
+
+# 每一幕的屏数, 要与 script.md 的屏数一致; 第 1 幕给 2 屏用来演示幕内多屏的屏序分支
+# 有 temp/plan.json 时屏起点直接读它, 这份常量只在读不到时兜底
+SCREEN_COUNT = [1, 2, 1]
 
 # ----------------------------------------------------------------- 调色板
 # 换风格只改这一块与背景三色, 风格库见 references/styles.md
@@ -119,11 +126,19 @@ def s_title(c, t):
 
 
 def s_chart(c, t):
-    """图表段, 曲线按拍生长"""
-    u = t - SEG_OF[1]
+    """图表段, 曲线按拍生长; 本幕 2 屏, 用 sub(t) 分支 (幕内多屏的写法示范)"""
+    k = act_of(t)
+    u = t - SEG_OF[k]
     lb = u / BEAT
     cv.motes(c, t, 0.6)
-    cv.section(c, t, "01", "小节标题", "section subtitle", ACC, appear=SEG_OF[1])
+    cv.section(c, t, "01", "小节标题", "section subtitle", ACC, appear=SEG_OF[k])
+    if sub(t) == 1:
+        # 第二屏换一套画法; 不分支的话这里画的东西会被下面第一屏的内容盖掉
+        b2 = cv.beat_on(lb, 1.0, 0.8)
+        if b2 > 0:
+            c.text_cap((cv.W / 2, 520), "第二屏的内容", 64, ACC2, b2, cap="center", halign="m")
+        caption(c, lb, 4.0, "第二屏的结论", TXT, 36, y=884)
+        return
     pa = cv.beat_on(lb, 1.0, 0.8)
     if pa > 0:
         c.rrect((300, 236, 1180, 812), 14, fill=cv.PANEL, falpha=0.55 * pa,
@@ -144,19 +159,76 @@ def s_chart(c, t):
 SCENES = [s_title, s_chart, s_chart]
 
 
+def act_of(t):
+    """
+    时间 t 落在第几幕 (从 0 起); 区间左闭右开, pick 与 sub 都走这一套边界
+    幕边界只来自 SEG_OF, 不要在这里另算一份
+    """
+    if t < SEG_OF[1]:
+        return 0
+    for j in range(len(SEG_OF) - 1):
+        if SEG_OF[j] <= t < SEG_OF[j + 1]:
+            return j
+    return len(SEG_OF) - 2
+
+
 def pick(t):
     """
-    区间映射, 首段在 [0, SEG_OF[0]) 内, 其余依次顺延
+    区间映射, 幕号取自 act_of
     区间写成左闭右开, 否则切点那一帧画的会是上一段
     """
-    k = 0
-    if t >= SEG_OF[1]:
-        k = len(SCENES) - 1
-        for j in range(len(SEG_OF) - 1):
-            if SEG_OF[j] <= t < SEG_OF[j + 1]:
-                k = j
-                break
-    return SCENES[k]
+    k = act_of(t)
+    return SCENES[k] if k < len(SCENES) else SCENES[-1]
+
+
+def _plan_screens():
+    """读 temp/plan.json 的逐幕屏起点秒; 读不到或格式不对时返回 None"""
+    if not os.path.exists(PLAN):
+        return None
+    try:
+        with open(PLAN, encoding="utf-8") as f:
+            p = json.load(f)
+    except (OSError, ValueError):
+        return None
+    out = []
+    for sc in p.get("scenes", []):
+        try:
+            ts = [float(s["t"]) for s in (sc.get("screens") or [])]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ts:
+            out.append(ts)
+    return out or None
+
+
+def screen_starts(k):
+    """
+    第 k 幕各屏的起点秒; 优先取 plan.json, 取不到就按该幕时长等分 SCREEN_COUNT[k]
+    返回数组长度等于该幕屏数, 至少 1 项
+    """
+    sp = seg_span(k)
+    if sp is None:
+        return [0.0]
+    ps = _plan_screens()
+    if ps is not None and k < len(ps):
+        return ps[k]
+    n = max(1, int(SCREEN_COUNT[k]) if k < len(SCREEN_COUNT) else 1)
+    a, b = sp
+    return [a + (b - a) * i / n for i in range(n)]
+
+
+def sub(t):
+    """
+    当前是这一幕的第几屏 (从 0 起), 一幕一屏时恒为 0
+
+    一个场景函数对应一幕而不是一屏, 幕内多屏必须按它分支: 同幕第二屏不分支的话
+    会被第一屏的画法整个盖掉, 上屏内容永远不出现, 而且不报错
+    """
+    n = 0
+    for i, s in enumerate(screen_starts(act_of(t))):
+        if t >= s:
+            n = i
+    return n
 
 
 def cam(t):

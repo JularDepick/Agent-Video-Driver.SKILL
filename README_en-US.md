@@ -41,11 +41,11 @@ This 108-second explainer was made from scratch by the skill: the picture is com
 | Picture engine | Supersampled anti-aliased canvas, easing and beat primitives, font size solved from a target width, cap-height alignment, tracking and per-glyph stagger, landing impact, glow and additive bloom, reusable UI components |
 | 3D and print | Pure-Python 3D point-cloud rendering with hidden-line engraving; a print and riso route with paper stock, halftone screens, separations, multiply overprint and misregistration |
 | Look deck | 17 ready-to-apply looks drawn at random by default, with an exclude list for the previous film, and the drawn card written into the project as `STYLE.md` |
-| Score engine | Orchestral and electronic voice libraries, a ten-section orchestration table against monotony, and a warm mastering chain that includes oversampled true-peak limiting |
+| Score engine | Orchestral and electronic voice libraries, an orchestration table taken per cut segment (so late segments keep their rhythmic layer too), and a warm mastering chain that includes oversampled true-peak limiting |
 | User-supplied music | Beat-grid detection, seamless-loop search, bar-accurate cutting with the grid preserved, and a re-measure of the grid afterwards |
 | Vision-free verification | Character-map composition checks, before/after frame comparison, contact sheets, GIF motion previews, brightness calibration against a reference, glyph inspection, frame differencing, PSNR, and true peak measured back from the delivered file |
-| Encoding | Frame encoding, mixdown, loudness normalisation, true-peak acceptance, stream and quality checks, in one command |
-| Process safety gates | One consent gate before starting, then a separate one before the full render and before the final assembly; heavy steps probe cores, load, memory and disk first and run within the recommended limits instead of claiming every core |
+| Encoding | Frame encoding, mixdown, loudness normalisation, true-peak acceptance, stream and quality checks; long films take the batched route with resume, `--redo` for selected batches, and a read-only progress front end that polls the state file; optional hardware encoders, plus an encode-route benchmark that separates decode, filter and encode costs first |
+| Process safety gates | One consent gate before starting (cost, palette, confirmation mode, batching, credit, file name), then a separate one before the full render and before the final assembly; heavy steps probe cores, load, memory and disk first and run within the recommended limits instead of claiming every core; any node that needs a user decision hands over the artifact path before asking |
 | Project scaffolding | One command to start a project: create the tree, copy the scripts in as a self-contained set, generate four skeletons and fill in the top-level constants |
 
 ## Workflow
@@ -57,7 +57,7 @@ This 108-second explainer was made from scratch by the skill: the picture is com
 
 Each stage lands an inspectable artifact before the next one starts. The first three stages involve the user, either step by step or in a single confirmation pass.
 
-Two delivery checkpoints are never skipped: the look is drawn from the deck by default and the drawn card is rendered on the first screen for the user to confirm, and a roughly ten-second opening preview is reviewed before the full render.
+The delivery checkpoints are never skipped: the palette is decided by the user first (pick from three to five hue directions, or give a primary colour), the look is drawn from the deck by default, the palette and the drawn card are combined into one direction and rendered as two sample images with hex values (a title card plus the most typical demo screen) for the user to sign off, and a roughly ten-second opening preview with its audio track is handed over by path before the full render. Every checkpoint delivers the artifact before asking anything; a still frame cannot stand in for rhythm and transitions.
 
 ## Quick start
 
@@ -84,13 +84,19 @@ python scene_module.py plan
 python scripts/resources.py --for render --frames 3240
 python scene_module.py render 0 810
 python scripts/resources.py --for encode --frames 3240 --out-dir out
-pwsh -File scripts/assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\final.mp4 -ProbeOnly
-pwsh -File scripts/assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\final.mp4 -ConfirmAssembly
+powershell -ExecutionPolicy Bypass -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\final.mp4 -ProbeOnly
+powershell -ExecutionPolicy Bypass -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\final.mp4 -ConfirmAssembly
 python scripts/qa.py out/final.mp4 --plan temp/plan.json
 ```
 
 `new_project.py` copies the scripts in as a self-contained set and generates four skeletons, so the rest runs from inside the project directory. When starting a project by hand, copy `script.md` and `scene_module.py` out of `templates/` before filling them in, as described in `templates/screen-script.md` and `templates/scene_module.py`.
-On machines with only Windows PowerShell 5.1, replace `pwsh` with `powershell`; the script runs under both.
+On machines with only Windows PowerShell 5.1, never write `pwsh` (it does not exist there), and always pass `-ExecutionPolicy Bypass`, otherwise the default execution policy blocks unsigned scripts. Keep the `-File` form if you switch to `pwsh`.
+For a long film, replace the last two commands with the batched route and watch progress in a second terminal:
+
+```
+python scripts/assemble_core.py --frames temp\frames_proj --audio audio\score.wav --out out\final.mp4 --batches 8 --preset medium --yes
+python scripts/assemble_progress.py --watch
+```
 
 ## Requirements
 

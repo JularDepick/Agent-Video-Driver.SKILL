@@ -60,7 +60,25 @@
 - 不使用 emoji, 不留无意义的连续空白
 - 同一个问题多次修复失败时, 先完整读完相关代码再动手
 - 文件编码: `.py` 与 `.md` 一律 UTF-8 不带 BOM; **含中文的 `.ps1` 必须 UTF-8 带 BOM**, 否则 Windows PowerShell 5.1 会按 GBK 解码, 中文变乱码并吞掉换行导致解析失败, 原因见 `pitfalls.md`
+- `.py` 的 `print` 到 GBK 控制台时可能抛 `UnicodeEncodeError` 把脚本打断 (例如要打的内容里有别的进程留下的替换字符); 脚本开头把输出流的错误降级: `sys.stdout.reconfigure(errors="replace")`, 读到子进程输出时同时给 `encoding="utf-8"` 与子进程环境的 `PYTHONIOENCODING=utf-8`
 - PowerShell 脚本调用一律用 `-File`, 不要用 `-Command "& ..."`, 后者会吞掉脚本退出码, 而安全门正是靠退出码表达状态的
+- 调用 `.ps1` 一律写成 `powershell -ExecutionPolicy Bypass -File <脚本> <参数>`: 只写 `powershell -File` 会在默认执行策略下被拦下 (报 `is not digitally signed`), `pwsh` 在只装了 Windows PowerShell 5.1 的机器上根本不存在, 两种都要能跑
+
+### PowerShell 5.1 可用写法 (白名单与黑名单)
+
+本技能的 `.ps1` 只允许用 Windows PowerShell 5.1 就有的能力, 因为 `pwsh` 在只装了系统自带 PowerShell 的机器上不存在. 写脚本前对照下表:
+
+| 类别 | 允许 (5.1 就有) | 禁止 (只有 PowerShell 7 有, 或者会踩坑) |
+|:---:|:---|:---|
+| 整数除法 | `[math]::Floor($a / $b)` 与 `$a % $b` | `[math]::DivRem($a, $b)` 的二参数写法; .NET 只有三参数重载 (要 `[ref]` 承接余数), 5.1 下报 `Cannot find an overload ... argument count: "2"` |
+| 条件取值 | `if () { } else { }` | 三目运算符 `条件 ? 甲 : 乙` |
+| 空合并 | `if ($null -eq $x) { ... }` | `??` 与 `?.` |
+| JSON | `ConvertFrom-Json` `ConvertTo-Json` | 依赖 `-AsHashtable` 之类的 7 版参数 |
+| 读输入 | `Read-Host`, `[Console]::IsInputRedirected`, `[Environment]::UserInteractive` | 7 版才有的 `-Prompt` 参数族 |
+| 读文件 | `Get-Content -Encoding utf8` | `-AsUTF8` 之类的新参数 |
+| ffmpeg 帧率同步 | 只给 `-framerate`, 让输入帧率决定时间基 | `-vsync` 在新版 ffmpeg 上会打弃用告警; 确实需要时用 `-fps_mode passthrough` |
+| 原生命令 stderr | 调用前后局部把 `$ErrorActionPreference` 降为 `Continue`, stderr 重定向到日志再读回 | 在 `Stop` 偏好下直接让 ffmpeg 写 stderr (会抛 `NativeCommandError`), 或降成 `SilentlyContinue` (日志是空的) |
+| 进程优先级 | `[System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = "BelowNormal"` | 依赖 7 版才有的 cmdlet 参数 |
 
 ## 文档规范
 

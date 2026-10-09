@@ -62,6 +62,16 @@ PRESET_SLOW = "slow"
 PRESET_MEDIUM = "medium"
 PRIORITY = "BelowNormal"
 
+# 硬件编码器白名单: 名称与厂商, 只用于报告, 不改变限额口径
+HW_ENCODERS = (
+    ("h264_nvenc", "NVIDIA NVENC"),
+    ("hevc_nvenc", "NVIDIA NVENC"),
+    ("av1_nvenc", "NVIDIA NVENC"),
+    ("h264_qsv", "Intel Quick Sync"),
+    ("h264_amf", "AMD AMF"),
+    ("h264_vaapi", "VAAPI"),
+)
+
 # 体积估计与安全系数
 FRAME_PNG_MB = 0.25
 VIDEO_FPS = 30.0
@@ -239,6 +249,25 @@ def probe_mem_cim():
         return None
 
 
+def probe_hw_encoders():
+    """
+    探测可用的硬件编码器, 返回 (找到的列表, 来源说明)
+
+    判断依据一律用 ffmpeg -encoders 的输出: *_nvenc 只需要显卡驱动, 不需要单独装
+    CUDA Toolkit, 所以 CUDA 版本号与 nvcc 都说明不了能不能硬件编码
+    """
+    if not shutil.which("ffmpeg"):
+        return [], "%s: ffmpeg 不在 PATH" % UNAVAILABLE
+    try:
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                           capture_output=True, text=True, timeout=25)
+        out = (p.stdout or "") + (p.stderr or "")
+    except Exception as e:
+        return [], "%s: %s" % (UNAVAILABLE, str(e)[:40])
+    found = [(name, vendor) for name, vendor in HW_ENCODERS if name in out]
+    return found, "ffmpeg -encoders"
+
+
 def probe_busy():
     """
     统计 ffmpeg, ffprobe, python 的实例数, 只报数不阻断
@@ -296,6 +325,7 @@ class ResourceReport:
         self.mem = self.probe_mem()
         self.disk = self.probe_disk()
         self.busy = self.probe_busy()
+        self.hw, self.hw_src = probe_hw_encoders()
         self.limits = self.make_limits()
         self.check_blocked()
         if self.force and self.blocked:
@@ -473,6 +503,8 @@ class ResourceReport:
             "mem": self.mem,
             "disk": self.disk,
             "busy": self.busy,
+            "hw_encoders": [{"name": n, "vendor": v} for n, v in self.hw],
+            "hw_source": self.hw_src,
             "limits": self.limits,
             "blocked": self.blocked,
             "reasons": self.reasons,
@@ -506,9 +538,25 @@ class ResourceReport:
             ("已有 ffmpeg 进程", fmt_num(self.busy["ffmpeg"], "", 0), ""),
             ("已有 ffprobe 进程", fmt_num(self.busy["ffprobe"], "", 0), ""),
             ("已有 python 进程", fmt_num(self.busy["python"], "", 0), self.src.get("busy", "")),
+            ("可用硬件编码器", (", ".join(n for n, _ in self.hw) if self.hw else "无 (走 CPU)"),
+             self.hw_src),
         ]
         for name, value, src in rows:
             out.append("%-22s %-22s %s" % (name, value, src))
+        out.append(line)
+        out.append("编码路线")
+        if self.hw:
+            out.append("  CPU 路线 (默认)       libx264 -preset %s -crf 18 到 20: 画质与体积的标定口径,"
+                       " PSNR 与体积判据都按它取" % self.limits["preset"])
+            out.append("  GPU 路线 (可选)       -Encoder %s: 速度优先, 同画质下体积会大几倍"
+                       % self.hw[0][0])
+            out.append("  换路线之前必须先做    先量 PSNR 定画质底线, 再分离输入解码与滤镜与编码三者的"
+                       "开销, 最后才动 preset 与编码器")
+            out.append("  原理提醒              x264 是纯 CPU 编码器, CUDA 加速不了它; 用 NVENC 等于"
+                       "换一个编码器, 画质会变")
+        else:
+            out.append("  可用硬件编码器        无, 编码走 CPU 路线 (libx264), 这是本技能的默认与验收口径")
+            out.append("  这只影响速度          画面与配乐的能力完全不受影响, 不要为它改工序")
         out.append(line)
         out.append("使用限额建议")
         out.append("  ffmpeg 编码线程数     -threads %d" % self.limits["threads"])

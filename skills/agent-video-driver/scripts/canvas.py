@@ -13,9 +13,18 @@ Pillow 程序化绘制, SS 倍超采样后降采样, 逐拍驱动
 """
 import os
 import math
+import sys
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageChops
+
+# Windows 的中文控制台默认是 GBK: 字形审计报告会原样打印上屏文本, 遇到 GBK 打不出的字符
+# (例如下标数字) print 会直接抛 UnicodeEncodeError 把渲染流程打断, 所以先把输出流降级
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 # ----------------------------------------------------------------- 全局配置
 # 项目模块 import 后调用 configure() 覆盖, 不要 from canvas import *

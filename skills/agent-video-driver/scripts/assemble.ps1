@@ -1,7 +1,15 @@
-﻿# Agent-Video-Driver 编码与封装
-# 两种调用方式都可以, 脚本本身只用 Windows PowerShell 5.1 就有的能力, 不写死 pwsh
-#   PowerShell 7:        pwsh -File scripts/assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4
-#   Windows PowerShell:  powershell -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4
+﻿# Agent-Video-Driver 编码与封装 (一次编完整段帧序列)
+# 脚本本身只用 Windows PowerShell 5.1 就有的能力, 两种启动器都能跑
+#   Windows PowerShell 5.1 (系统自带):  powershell -ExecutionPolicy Bypass -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4
+#   PowerShell 7 (装了才有 pwsh):        pwsh -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4
+# 只装了 5.1 时不要写 pwsh (根本不存在); 5.1 下务必带 -ExecutionPolicy Bypass,
+# 否则默认执行策略会拦下未签名脚本, 报 is not digitally signed.
+# 长片或需要分批与断点续跑时改用 scripts\assemble_core.py 的分批路线, 见 references\workflow.md 阶段 6
+#
+# 编码器: -Encoder 缺省 libx264 (CPU 路线, 画质与体积的标定口径). 换成 h264_nvenc 之类的硬件
+# 编码器时, 脚本会把 preset 映射到 NVENC 的 p7/p6/p5/p4, 把 crf 映射到 -rc vbr -cq.
+# 两条硬约束: x264 是纯 CPU 编码器, CUDA 加速不了它, 换 NVENC 等于换编码器;
+#             瓶颈可能在滤镜 (noise 颗粒) 而不是编码器, 换路线前先分离两者的开销.
 #
 # 合成确认门 (最终合成会把 CPU 长时间打满, 必须先过这道门)
 #   1. 先数帧, 再调 scripts/resources.py --for encode 做资源探测, 探测报告原样打印,
@@ -36,6 +44,7 @@ param(
     [switch]$ExactLoudness,
     [int]$Threads = 0,
     [string]$Preset = "",
+    [string]$Encoder = "libx264",
     [string]$Priority = "BelowNormal",
     [switch]$ConfirmAssembly,
     [switch]$ProbeOnly,
@@ -49,6 +58,31 @@ $log = Join-Path $dir "_ffmpeg_stderr.log"
 $mix = Join-Path $dir "_mix_measure.m4a"
 $probeJson = "temp\resources_encode.json"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+function Resolve-EncoderArgs {
+    # 把 CPU 侧的 preset 与 crf 映射到所选编码器
+    # 换编码器不等于给同一个编码器加开关: x264 是纯 CPU 编码器, CUDA 加速不了它,
+    # 用 NVENC 是换成另一个编码器, 画质与体积都会变, 换完必须重新量 PSNR
+    param([string]$Name, [string]$Preset, [int]$Crf)
+    if ($Name -eq "libx264") {
+        return @("-c:v", "libx264", "-preset", $Preset, "-crf", "$Crf")
+    }
+    if ($Name -like "*_nvenc") {
+        $map = @{ "slow" = "p7"; "medium" = "p6"; "fast" = "p5"; "veryfast" = "p4" }
+        $p = if ($map.ContainsKey($Preset)) { $map[$Preset] } else { "p6" }
+        # NVENC 用 vbr 加 cq, 并把目标码率交给 cq 决定, 否则它按固定码率跑, 体积会失控
+        return @("-c:v", $Name, "-preset", $p, "-rc", "vbr", "-cq", "$Crf", "-b:v", "0")
+    }
+    if ($Name -like "*_qsv") {
+        return @("-c:v", $Name, "-preset", "medium", "-global_quality", "$Crf")
+    }
+    if ($Name -like "*_amf") {
+        return @("-c:v", $Name, "-quality", "balanced", "-rc", "cqp",
+                 "-qp_i", "$Crf", "-qp_p", "$Crf")
+    }
+    # 其余硬件编码器 (例如 vaapi) 参数语义差别更大, 只透传编码器与 crf, 由使用者自己核对
+    return @("-c:v", $Name, "-crf", "$Crf")
+}
 
 function Get-IntegratedLufs {
     # 量测集成响度 I, 解析不到时返回 $null
@@ -199,9 +233,15 @@ $filterThreads = @("-filter_threads", "$useThreads")
 $encodeThreads = @("-threads", "$useThreads")
 
 Write-Host "[1/4] 编码帧序列 -> $tmp"
+Write-Host "      编码器 $Encoder (preset $usePreset, crf $Crf)"
+if ($Encoder -ne "libx264") {
+    Write-Host "      提醒: 这不是给 x264 开开关, 而是换了一个编码器; 同画质下体积通常会大几倍,"
+    Write-Host "            下面的 PSNR 质检必须看, 换路线之前先用 scripts/bench_encode.py 对比"
+}
 $vf = "noise=alls=${Noise}:allf=t,format=yuv420p"
+$encArgs = Resolve-EncoderArgs -Name $Encoder -Preset $usePreset -Crf $Crf
 ffmpeg -y -hide_banner -loglevel warning @filterThreads -framerate $Fps -i "$Frames\n%05d.png" `
-    -vf $vf -c:v libx264 -preset $usePreset -crf $Crf @encodeThreads -pix_fmt yuv420p -movflags +faststart $tmp
+    -vf $vf @encArgs @encodeThreads -pix_fmt yuv420p -movflags +faststart $tmp
 if ($LASTEXITCODE -ne 0) { throw "编码失败" }
 
 if ($ExactLoudness) {
