@@ -229,7 +229,7 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 | 体积 | 1080p 每 30s 控制在 15MB 以内 (CRF 18 到 20) | 编码后 | 文件属性 |
 | 内容 | 上屏每一行文字都能在已核实的内容里找到出处 | 交付前 | content-and-rights.md 的核查表 |
 
-方法与实测口径见 `references/verification.md`; 编码前的窗口划分见 `references/workflow.md` 的阶段 6.
+方法与实测口径见 `references/verification.md`; 编码前的窗口划分见 `references/workflow.md` 的阶段 6; 交付前的完整复查环 (总览两遍, 关键动作条带, blackdetect, 与基准片并排比) 见 `references/verification.md` 的复查环一节.
 
 ## 九, 署名策略
 
@@ -243,7 +243,8 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 |:---:|:---|:---|:---|
 | 1 | `references/workflow.md` | 八阶段流程, 每阶段产出物, 分段经验值 | 接到任务后第一份 |
 | 2 | `references/prompt-scaffolding.md` | 简报与阶段提示词的七模块, 角色分工, 子代理交接 | 开工写提示词时 |
-| 3 | `references/narrative.md` | 开场语法, 单屏字数与阅读速度, 主句尺寸标尺, 叙事线索与节奏 | 写文案时 |
+| 3 | `references/narrative.md` | 开场语法, 单屏字数与阅读速度, 字幕驻留, 主句尺寸标尺, 叙事线索与节奏 | 写文案时 |
+| 3.5 | `references/direction.md` | 导演方法论: 基准片, 三候选结构的 TREATMENT, 故事形状, 声音三层, 镜头语法, 表演, 对照自查 | 写分镜之前, 读 narrative 之后 |
 | 4 | `references/content-and-rights.md` | 事实来源判定, 素材许可, 署名, 发布前清单 | 查资料与配图时 |
 | 5 | `references/styles.md` | 十种风格与配乐对应, 通用运动语法, 选风格的四条判断法 | 定风格时 |
 | 6 | `references/beat-sync.md` | 三层对齐, 段内四拍职责, 整场反白, 卡点验证 | 写分镜之前 |
