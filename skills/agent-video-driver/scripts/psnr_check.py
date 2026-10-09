@@ -120,6 +120,10 @@ def main(argv=None):
     if not os.path.exists(a.video):
         print("找不到视频: %s" % a.video)
         return 2
+    if os.path.isdir(a.video):
+        print("--video 要的是视频流或成片文件, 不是目录; "
+              "目录是 --frames 的输入形状, 对齐对象传 mp4 文件")
+        return 2
 
     total, mx = count_frames(a.frames)
     if total == 0:

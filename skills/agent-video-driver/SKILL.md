@@ -73,7 +73,7 @@ python scripts/resources.py --for encode --frames <帧数>
 只探测不编码分别是 `-ProbeOnly` 与 `--probe-only`. 探测判定空间不足或负载过高时, 脚本会拒绝开工 (退出 4), 要强行开工必须显式加 `-Force` / `--force`.
 长片用 `assemble_core.py` 的分批路线: 它每完成一批原子写状态 JSON, 重跑即从断点续跑, `--redo N` 只重编指定批次, 前端 `scripts/assemble_progress.py` 只读轮询状态画进度, 启停权始终在用户手里.
 
-## 二, 十阶段流程
+## 二, 九阶段流程 (0 到 8)
 
 ```
 0 探测环境 -> 1 简报与提示词 -> 2 内容与文案 -> 3 风格与分镜
@@ -184,7 +184,7 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 
 判定规则, 汇报格式与发布前清单见 `references/content-and-rights.md`.
 
-## 七, 二十四条工程铁律 (都是踩过的坑)
+## 七, 二十三条工程铁律 (都是踩过的坑)
 
 1. 先做配乐再做画面, 画面切点必须等于配乐切点, 不要反过来迁就画面
 2. 所有入场动画以拍为单位写死, 禁止用秒数近似, 卡点差一帧观众就能看出来
@@ -206,9 +206,9 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 18. 上屏的每个数字都要与代码实际值对账, 不要凭记忆写; 改帧率分辨率采样率之后要重新对一次
 19. 音轨用 AAC 384k, 真峰要从成片解码回来量; 256k 会把瞬态密集素材的解码真峰顶到 0 dBFS 以上
 20. 分批编码只切视频流, 音频整条一次处理; 切片用 `-start_number` 加 `-frames:v`, 不要用 `-vf select`, 后者每批都会把整段帧全解码一遍
-22. 渲染进行中场景源码视为冻结, 必须改就先停渲染进程, 改完重渲受影响帧区间并对对应批次 `--redo`, 最后重测 PSNR 与响度
-23. 源帧改过就必须重编受影响批次 (分批路线用 `--redo N`), 动手前先确认改的帧落在哪个批次 (`scene_module.py screen N` 反查), 否则视频里是旧帧而磁盘上是新帧, PSNR 验收会假性崩掉
-24. 换编码路线有固定顺序: 先量 PSNR 定画质底线, 再分离解码与滤镜与编码三段开销, 最后才动 preset 与编码器; x264 是纯 CPU 编码器, CUDA 加速不了它, 换 NVENC 等于换编码器, 换完必须重量 PSNR
+21. 渲染进行中场景源码视为冻结, 必须改就先停渲染进程, 改完重渲受影响帧区间并对对应批次 `--redo`, 最后重测 PSNR 与响度
+22. 源帧改过就必须重编受影响批次 (分批路线用 `--redo N`), 动手前先确认改的帧落在哪个批次 (`scene_module.py screen N` 反查), 否则视频里是旧帧而磁盘上是新帧, PSNR 验收会假性崩掉
+23. 换编码路线有固定顺序: 先量 PSNR 定画质底线, 再分离解码与滤镜与编码三段开销, 最后才动 preset 与编码器; x264 是纯 CPU 编码器, CUDA 加速不了它, 换 NVENC 等于换编码器, 换完必须重量 PSNR
 
 完整坑表与复现条件见 `references/pitfalls.md`, 文本编码见 `references/text-and-encoding.md`.
 
@@ -241,7 +241,7 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 
 | 顺序 | 文档 | 内容 | 什么时候读 |
 |:---:|:---|:---|:---|
-| 1 | `references/workflow.md` | 八阶段流程, 每阶段产出物, 分段经验值 | 接到任务后第一份 |
+| 1 | `references/workflow.md` | 九阶段流程 (0 到 8), 每阶段产出物, 分段经验值 | 接到任务后第一份 |
 | 2 | `references/prompt-scaffolding.md` | 简报与阶段提示词的七模块, 角色分工, 子代理交接 | 开工写提示词时 |
 | 3 | `references/narrative.md` | 开场语法, 单屏字数与阅读速度, 字幕驻留, 主句尺寸标尺, 叙事线索与节奏 | 写文案时 |
 | 3.5 | `references/direction.md` | 导演方法论: 基准片, 三候选结构的 TREATMENT, 故事形状, 声音三层, 镜头语法, 表演, 对照自查 | 写分镜之前, 读 narrative 之后 |

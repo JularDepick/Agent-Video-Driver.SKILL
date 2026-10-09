@@ -174,8 +174,9 @@ Copyright &copy; 2026 JularDepick
 ## 友情链接
 
 - 开源本地优先的对话式 AI 多轨视频剪辑器: https://github.com/0xsline/OpenChatCut/
-- 两种视觉风格各一份的 Agent 视频技能参考: https://github.com/tuzhechen2005/opus-video-skills/
-- Remotion 视频框架的最佳实践技能库参考: https://github.com/buainoai/remotion-skills/
+- 43 种影片风格的 Agent 导演技能库, 每种风格配一支纯代码短片, 含导演与技法两份方法论: https://github.com/lemomo-ai/lemo-opuscar/
+- 两种视觉风格各一份的 Agent 视频技能: https://github.com/tuzhechen2005/opus-video-skills/
+- Remotion 视频框架的最佳实践技能库: https://github.com/buainoai/remotion-skills/
 - 纯代码生成动态图形成片的 Agent 技能: https://github.com/HRuiCcc/RuiC-motion-reel/
 - 把一个主题做成科普讲解片的 Agent 技能: https://github.com/Win-Hao/knowledge-video/
 

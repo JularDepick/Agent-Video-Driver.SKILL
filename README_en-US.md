@@ -127,6 +127,8 @@ Install the agent-video-driver skill from https://github.com/JularDepick/Agent-V
 
 ## Repository layout
 
+Repository:
+
 ```
 Agent-Video-Driver.SKILL/
 ├── .github/                    # GitHub Actions workflows
@@ -143,7 +145,7 @@ Inside the skill:
 
 ```
 agent-video-driver/
-├── SKILL.md                    # Entry: consent gates, nine stages, content floor, engineering rules, acceptance
+├── SKILL.md                    # Entry: consent gates, nine-stage workflow, content floor, engineering rules, acceptance
 ├── references/                 # Deeper documents, read on demand
 ├── scripts/                    # Scripts to reuse or copy
 └── templates/                  # Skeletons and templates
@@ -172,5 +174,12 @@ This repository uses the [Apache-2.0](./LICENSE) license.
 ## Links
 
 - Open-source local-first conversational AI video editor with a multi-track timeline: https://github.com/0xsline/OpenChatCut/
+- An agent-director skill library of 43 film styles, each with a purely code-made short film, plus directing and technique guides: https://github.com/lemomo-ai/lemo-opuscar/
+- Agent video skill with two visual styles, one each: https://github.com/tuzhechen2005/opus-video-skills/
+- Best-practice skill library for the Remotion video framework: https://github.com/buainoai/remotion-skills/
 - Agent skill that renders motion-graphic films from pure code: https://github.com/HRuiCcc/RuiC-motion-reel/
 - Agent skill that turns one topic into a knowledge explainer video: https://github.com/Win-Hao/knowledge-video/
+
+## Iteration notes
+
+The skill in this project is iterated by an Agent, and the workflows and design ideas of the repositories under [#Links](#links) were studied along the way, with iterative "measure, feedback, refine" passes across multiple real productions.

@@ -21,6 +21,13 @@ import json
 import os
 import sys
 
+# 本脚本会打印字体是否认识 ✓ ₂ 这类特殊字符, GBK 控制台直接 print 会抛
+# UnicodeEncodeError 把体检结果变成裸 traceback, 先把输出流转成可容错的 UTF-8
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 import numpy as np
 from PIL import Image, ImageDraw
 

@@ -38,10 +38,7 @@ python scripts/music.py     108 100 score_nobel.wav "7.2,16.8,26.4,36,50.4,64.8,
 | 音色 | 实现要点 | 风格 |
 |:---:|:---|:---|
 | `soft_kick` | 正弦扫频 62 到 102Hz, 0.17s 衰减, 无 click 无失真 | 纪录片 |
-| `kick` | 正弦扫频 46 到 176Hz, 加瞬态 click 与 tanh 饱和 | 燃向 |
 | `rim` | 噪声经 4 阶带通 200 到 900Hz, 加 180Hz 短音 | 纪录片 |
-| `snare` `clap` | 噪声包络加音体, 带通到 7kHz | 燃向 |
-| `hat` `shaker` | 高通噪声, 短衰减 | 燃向, 慎用 |
 | `piano` | 正弦加 2/3/4 次谐波且高次衰减更快, 6ms 起音 | 通用 |
 | `pad` | 每个和弦音三路失谐正弦, 0.9s 慢起, 低通 900Hz | 通用 |
 | `sub_bass` | 正弦加二次谐波, 低通 260Hz | 通用 |
@@ -89,7 +86,7 @@ python scripts/music.py     108 100 score_nobel.wav "7.2,16.8,26.4,36,50.4,64.8,
 
 ## 客观判据 (必须达标)
 
-用 `python scripts/check_audio.py <文件名> <BPM>` 检查:
+用 `python scripts/check_audio.py <文件名> <BPM>` 检查; 判据按引擎分档, `--engine` 缺省是管弦乐档, 检查 `music.py` 的产物要显式加 `--engine keyboard` 才用键盘与电子档的门槛 (拍点峰值比 1.8, 谱心 600 到 1500Hz):
 
 | 指标 | 目标 | 含义 |
 |:---:|:---:|:---|
@@ -191,7 +188,7 @@ python scripts/sfx.py audio/cues.json audio/sfx.wav --duration 108
 
 ## 换风格时的音色替换
 
-- 换燃向: 把 `soft_kick` 换 `kick`, `rim` 换 `snare` 加 `clap`, 加 `hat` 与 `shaker`, `sub_bass` 换锯齿贝斯, BPM 提到 120 到 128
+- 换燃向: 当前引擎没有 `kick` `snare` `clap` `hat` `shaker` 这几个强瞬态音色, 不要照旧文档直接调名; 可行的做法是加宽 `soft_kick` 的扫频区间并加饱和近似强底鼓, 用 `rim` 加密到八分音符充当军鼓位, BPM 提到 120 到 128; 需要真正的军鼓与镲时要在 `music.py` 里按 `dsp.py` 的噪声带通套路新写音色, 写完按 check_audio 的判据复测
 - 换极简: 删掉全部鼓, 只留 `piano` 单音与 `pad`, 和弦循环拉长到 16 小节
 - 换芯片音: 正弦换方波, 加极短衰减, 加噪声底鼓, 禁用混响
 - 换电影感: 删鼓, `pad` 换长弦乐, 混响尾巴加到 3s, 加低频隆隆

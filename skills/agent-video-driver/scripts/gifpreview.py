@@ -42,7 +42,7 @@ def auto_step(total, frm, to, max_frames):
 
 def main():
     ap = argparse.ArgumentParser(description="从帧序列抽帧存成 GIF, 用来看运动")
-    ap.add_argument("frames", help="帧目录, 里面是 n%05d.png")
+    ap.add_argument("frames", help="帧目录, 里面是 n%%05d.png")
     ap.add_argument("--from", dest="frm", type=int, default=None, help="起始帧号, 缺省 0")
     ap.add_argument("--to", dest="to", type=int, default=None, help="结束帧号, 缺省到最后一个")
     ap.add_argument("--every", type=int, default=None,

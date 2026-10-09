@@ -499,6 +499,10 @@ def main(argv=None):
     a = parse_args(argv)
     total = count_frames(a.frames)
     if total == 0:
+        if a.probe_only:
+            print("仅探测: 帧目录 %s 还没有 %s 命名的帧, 帧齐后再来探测与编码"
+                  % (a.frames, FRAME_PATTERN))
+            return 0
         print("错误: 在 %s 下没数到 %s 命名的帧, 先确认帧目录与命名" % (a.frames, FRAME_PATTERN))
         return 2
     cfg = build_config(a, total)

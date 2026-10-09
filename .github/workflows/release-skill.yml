@@ -26,6 +26,7 @@ jobs:
           cd skills
           find . -mindepth 1 -type f \
             -not -path '*/__pycache__/*' -not -name '*.pyc' -not -name '.DS_Store' \
+            -not -path '*/_t_audio/*' \
             -printf '%P\n' | sort | zip -X -9 "../${ZIP}" -@
           cd ..
           # 打包自检: 压缩包非空, 且技能入口在里面

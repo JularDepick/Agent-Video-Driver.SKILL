@@ -28,6 +28,12 @@ import numpy as np
 from PIL import Image
 
 CW, CH = 96, 48
+
+
+class PreviewError(Exception):
+    """输入不满足字符图前提时的受控错误, main 捕获后转退出码 2"""
+
+
 # 换行符写成常量, 避免在不同编辑器与转义层之间来回丢反斜杠
 NL = chr(10)
 
@@ -97,6 +103,10 @@ def preview(path, cw=CW, ch=CH, ink=False, edge=False):
     a = np.asarray(im).astype(np.float32)
     h, w, _ = a.shape
     bh, bw = h // ch, w // cw
+    if bh < 1 or bw < 1:
+        raise PreviewError(
+            "图片 %dx%d 小于字符网格 %dx%d, 每格分不到一个像素; "
+            "preview.py 的输入应为整帧渲染图 (如 1920x1080)" % (w, h, cw, ch))
     a = a[:bh * ch, :bw * cw]
     if edge:
         # 线稿模式: 灰度先求梯度幅值 (线上大, 背景小), 每块取梯度最大的像素做分类.
@@ -261,4 +271,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except PreviewError as e:
+        print(str(e))
+        sys.exit(2)
