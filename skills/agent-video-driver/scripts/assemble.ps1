@@ -16,8 +16,12 @@
 #      命令行给了 -Threads 或 -Preset 时以命令行为准, 否则用探测建议
 #   7. -ExactLoudness 走精确响度路径 (量测 -> 按差值补偿 -> 限幅 -> 与视频流合成),
 #      不加时仍是原来的单遍 loudnorm; 限额对两条路径都生效
+#   8. 音轨一律 AAC, 码率由 -AudioBitrate 决定 (缺省 384k); 不要降到 256k:
+#      瞬态密集的素材在 256k 下解码回来的真峰会冲到 0 dBFS 以上
+#   9. 验收阶段从成片里解码回来量真峰 (ebur128=peak=true 的 True peak 行),
+#      超过 -TruePeakCeiling (缺省 -1.0 dBFS) 判不合格并退出 5; 只信波形文件的数会漏判
 #
-# 退出码: 0 成功; 3 等待用户二次确认; 4 探测判定应拦截; 其余非零表示编码或混音失败
+# 退出码: 0 成功; 3 等待用户二次确认; 4 探测判定应拦截; 5 真峰不合格; 其余非零表示编码或混音失败
 param(
     [string]$Frames = "temp\frames",
     [string]$Audio = "audio\score.wav",
@@ -26,6 +30,8 @@ param(
     [int]$Crf = 19,
     [int]$Noise = 2,
     [double]$Lufs = -15.0,
+    [int]$AudioBitrate = 384,
+    [double]$TruePeakCeiling = -1.0,
     [switch]$SkipQualityCheck,
     [switch]$ExactLoudness,
     [int]$Threads = 0,
@@ -204,7 +210,7 @@ if ($ExactLoudness) {
     Write-Host "      2.1 按最终编码参数生成待量测的音频 -> $mix"
     # 视频流用 -c:v copy 不会改变音频, 所以量测只需针对要混入的音频
     # 按最终 AAC 参数编码, 把有损编码带来的响度偏差一并算进量测
-    ffmpeg -y -hide_banner -loglevel error @filterThreads -i $Audio -ar 48000 -c:a aac -b:a 256k @encodeThreads $mix
+    ffmpeg -y -hide_banner -loglevel error @filterThreads -i $Audio -ar 48000 -c:a aac -b:a "$AudioBitrate"k @encodeThreads $mix
     if ($LASTEXITCODE -ne 0) { throw "生成量测音频失败" }
 
     $i0 = Get-IntegratedLufs -Path $mix -LogPath $log
@@ -222,14 +228,14 @@ if ($ExactLoudness) {
     Write-Host "      2.4 施加 volume 与 alimiter, 再与视频流合成 (-c:v copy, 不重渲画面)"
     ffmpeg -y -hide_banner -loglevel error @filterThreads -i $tmp -i $Audio `
         -map 0:v -map 1:a -c:v copy -af "volume=${gain}dB,alimiter=limit=${limLevel}:level=false" `
-        -ar 48000 -c:a aac -b:a 256k @encodeThreads -movflags +faststart -shortest $Out
+        -ar 48000 -c:a aac -b:a "$AudioBitrate"k @encodeThreads -movflags +faststart -shortest $Out
     if ($LASTEXITCODE -ne 0) { throw "混音失败" }
     Remove-Item $mix -Force -ErrorAction SilentlyContinue
 } else {
     Write-Host "[2/4] 混音并归一响度到 $Lufs LUFS"
     $af = "loudnorm=I=${Lufs}:TP=-1.5:LRA=11"
     ffmpeg -y -hide_banner -loglevel error @filterThreads -i $tmp -i $Audio `
-        -map 0:v -map 1:a -c:v copy -af $af -ar 48000 -c:a aac -b:a 256k @encodeThreads `
+        -map 0:v -map 1:a -c:v copy -af $af -ar 48000 -c:a aac -b:a "$AudioBitrate"k @encodeThreads `
         -movflags +faststart -shortest $Out
     if ($LASTEXITCODE -ne 0) { throw "混音失败" }
 }
@@ -240,12 +246,28 @@ ffprobe -v error -show_entries format=duration,size `
     -of default=nw=1 $Out
 
 Write-Host "[4/4] 响度与真峰值"
-# 同 Get-IntegratedLufs: 原生命令的 stderr 先落到日志文件, 再筛出摘要行
-# 取行首的 I/LRA/Peak 值行, 否则 "True peak:" 会把集成响度那行挤出最后三条
+# 真峰必须从成片里解码回来量: AAC 是有损编码, 重建波形的采样间峰值可以超过原采样点,
+# 只信波形文件的数会漏判; 实测同一段瞬态密集的素材编解码一趟能涨 3dB 以上
+# 原生命令的 stderr 先落到日志文件, 再筛出摘要行; 用锚定正则避免命中别的行
 $ErrorActionPreference = "Continue"
 ffmpeg -hide_banner -nostats -i $Out -map 0:a -af ebur128=peak=true -f null - 2> $log
 $ErrorActionPreference = "Stop"
-Get-Content $log | Select-String -Pattern "^\s*(I|LRA|Peak):\s*-?\d" | Select-Object -Last 3
+Get-Content $log | Select-String -Pattern "^\s*(I|LRA|Peak|True peak):\s*-?\d" | Select-Object -Last 4
+
+$peakFailed = $false
+$tpHit = Select-String -Path $log -Pattern "^\s*True peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS" | Select-Object -Last 1
+if ($tpHit) {
+    $tp = [double]$tpHit.Matches[0].Groups[1].Value
+    if ($tp -gt $TruePeakCeiling) {
+        Write-Host ("真峰不合格: 实测 {0} dBFS, 判据是不高于 {1} dBFS" -f $tp, $TruePeakCeiling)
+        Write-Host "  处置: 降配乐峰值, 提高 -AudioBitrate, 或改用 -ExactLoudness 的精确响度路径"
+        $peakFailed = $true
+    } else {
+        Write-Host ("真峰合格: 实测 {0} dBFS, 判据是不高于 {1} dBFS" -f $tp, $TruePeakCeiling)
+    }
+} else {
+    Write-Host "警告: 日志里没有 True peak 行, 真峰未能核对"
+}
 
 if (-not $SkipQualityCheck) {
     Write-Host "[质检] 编码前后 PSNR (高于 45dB 为视觉无损)"
@@ -259,4 +281,9 @@ if (-not $SkipQualityCheck) {
 Remove-Item $tmp -Force -ErrorAction SilentlyContinue
 Remove-Item $log -Force -ErrorAction SilentlyContinue
 Remove-Item $mix -Force -ErrorAction SilentlyContinue
+
+if ($peakFailed) {
+    Write-Host "完成但有不合格项: $Out"
+    exit 5
+}
 Write-Host "完成: $Out"

@@ -32,6 +32,9 @@ metadata:
 逐步确认适合事实与审美需要用户发言权的题材, 一次确认适合判据客观的题材; 两种模式下"先出开头 10 秒"这个节点都不省略.
 用户未确认前只做环境探测与分镜草案, 不渲染.
 
+做品牌片或产品片时再加问三件事: 品牌色从哪来 (用户已有色板 / 官网样式表 / 产品截图, 必须实测不许凭印象挑), 品牌标志是否出现以及用哪份真素材, 有没有必须出现与必须不出现的词 (例如全英文或不得出现某个品牌名).
+取色方法与来源标注见 `references/content-and-rights.md` 的品牌素材与品牌色.
+
 ### 门二, 合成确认门 (每次跑重活之前单独确认)
 
 门一的同意不覆盖这一步. 全量渲染与最终合成是仅有的两个把 CPU 长时间吃满的动作, 各自之前都要再确认一次:
@@ -81,12 +84,23 @@ python scripts/resources.py --for encode --frames <帧数>
 - 一个视频一个命名前缀, 帧目录与成片名对应, 避免多任务互相覆盖
 - 更多约定见 `references/conventions.md`
 
-## 四, 风格不固定, 但配乐默认走管弦乐
+## 四, 风格靠抽签, 配乐默认走管弦乐
 
-本技能给的是引擎, 不是模板. 开片前先选风格, 再选配色与音色, 最后才写分镜.
-`references/styles.md` 提供八种可直接套用的风格, 含配色十六进制, 字体, 运动语法, 配乐音色与适配题材:
+本技能给的是引擎, 不是模板. 风格表是一副 **17 张的牌**, 用户没有点名风格或参考片时**先抽签再开工**:
 
-深空霓虹 / 冷调纪录片 / 温暖纸感 / 极简白场 / 复古终端 / 学术图表 / 手绘涂鸦 / 电影胶片.
+```
+python scripts/style_lottery.py --list              看整副牌
+python scripts/style_lottery.py --seed 7            抽一张, 可复现
+python scripts/style_lottery.py --tone light        只在轻的那一档里抽
+python scripts/style_lottery.py --avoid riso-press  排除上一条抽过的
+python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
+```
+
+抽到哪张做哪张, 不要因为这张不够炫就换牌: 牌里一半以上是轻的(编辑排版, 工程图, 标本图录, 手绘速写), 轻的做干净了一样好看, 不要每次都上最响的那一支. 牌堆数据在 `scripts/styles.py`, 十张牌的详细配色与参数在 `references/styles.md`:
+
+深空霓虹 / 冷调纪录片 / 温暖纸感 / 极简白场 / 复古终端 / 学术图表 / 手绘涂鸦 / 电影胶片 / 品牌亮色产品片 / 丝网印与 riso 四色, 另有蓝图工程图, 暗房银盐, 纸艺纸感, 瑞士编辑排版, 动态字体, 数据图版, 拼贴剪纸七张.
+
+只有两种情况跳过抽签: 用户点名了风格或参考片, 或者在改一条已有的片.
 
 配乐默认用 `scripts/orchestra.py` 的管弦乐音色库. 理由是它同时满足两条硬要求:
 
@@ -101,20 +115,30 @@ python scripts/resources.py --for encode --frames <帧数>
 | 脚本 | 作用 |
 |:---:|:---|
 | `scripts/check_env.py` | 探测 ffmpeg, Python 库, 字体, 磁盘, 沙箱限制, 渲染路线可用性 |
+| `scripts/new_project.py` | 起一个新工程: 建目录, 复制脚本成自包含副本, 生成四份骨架并写好顶部常量 |
 | `scripts/resources.py` | 重活前的资源探测与限额建议: 核数, 负载, 内存, 磁盘, 建议线程数与编码预设 |
 | `scripts/check_text.py` | 字形体检: 位图比对找出会变豆腐块的字符 |
 | `scripts/beats.py` | 从音频反推 BPM, 拍点, 小节线, 逐小节响度变化 |
+| `scripts/loops.py` | 找音乐接缝: 比较各小节频谱, 列出可无缝重复或剪掉的小节区间 |
+| `scripts/cutmusic.py` | 按小节剪辑用户自备音乐, 接缝落在精确的小节线上 |
 | `scripts/timing.py` | 把屏文案表排到拍网格, 产出 plan.json 与分镜用的时间表 |
 | `scripts/canvas.py` | 画面引擎: 超采样画布, 缓动, 发光, 文字, 通用 UI 组件, 渲染驱动 |
+| `scripts/imgnp.py` | 共享 numpy 图像基元: 模糊, 邻域滤波, 亚像素平移 |
+| `scripts/three.py` | 3D 点云渲染: 参数曲面采样, 相机, 画家算法遮挡, 隐藏线刻版 |
+| `scripts/printkit.py` | 印刷与 riso 原语: 纸底, 网点, 油墨覆盖率, 叠印, 套印偏移, 明暗窗口, 主版线 |
+| `scripts/styles.py` | 风格牌堆数据: 17 张牌的惯用手法, 底板, 字体, 配乐与注意事项 |
+| `scripts/style_lottery.py` | 抽一张风格牌, 可复现, 可排除, 可落成项目里的 STYLE.md |
 | `scripts/dsp.py` | 共享 DSP 基元: 滤波, 混响, 总线压缩, 暖调母带, 写 WAV |
 | `scripts/orchestra.py` | 管弦乐配乐引擎 (默认推荐) |
 | `scripts/music.py` | 键盘与电子配乐引擎 (备选) |
 | `scripts/sfx.py` | 音效轨混音: 按 cue 表把用户自备音效混成一条轨 |
 | `scripts/check_audio.py` | 配乐客观检查: 卡点, 频段, 脉冲, 单调性一次跑完 |
 | `scripts/preview.py` | 无视觉能力下的画面验收: 把帧降采样成彩色字符图, 支持前后帧对比 |
+| `scripts/gifpreview.py` | 从帧序列抽帧存成 GIF, 用来看运动, 供用户过风格确认 |
+| `scripts/brightness.py` | 亮度标定: 量均值, 中位数与 p95, 可与参考片同位置对比 |
 | `scripts/qa.py` | 按 plan.json 逐屏抽帧, 锚点前后帧对比, 拼总览图 |
 | `scripts/tokens.py` | 统计本会话 token 与成本, 供片尾字幕使用 |
-| `scripts/assemble.ps1` | 编码, 混音, 响度归一, 质检 |
+| `scripts/assemble.ps1` | 编码, 混音, 响度归一, 从成片解码回来量真峰, 质检 |
 | `templates/scene_module.py` | 场景模块骨架: 逐拍触发, 分段调度, 区间渲染 CLI |
 | `templates/storyboard.md` | 分镜表与确认门模板 |
 | `templates/brief.md` | 简报模板, 全片唯一的一份背景 |
@@ -132,7 +156,7 @@ python scripts/resources.py --for encode --frames <帧数>
 
 判定规则, 汇报格式与发布前清单见 `references/content-and-rights.md`.
 
-## 七, 十四条工程铁律 (都是踩过的坑)
+## 七, 十九条工程铁律 (都是踩过的坑)
 
 1. 先做配乐再做画面, 画面切点必须等于配乐切点, 不要反过来迁就画面
 2. 所有入场动画以拍为单位写死, 禁止用秒数近似, 卡点差一帧观众就能看出来
@@ -148,6 +172,11 @@ python scripts/resources.py --for encode --frames <帧数>
 12. 无视觉能力时不要凭想象交付, 用字符图逐帧核对构图再用客观指标兜底
 13. 会话里只做一条片, 第二条另开会话, 否则缓存与上下文都会失控
 14. 全量渲染与最终合成前先探测资源并按限额跑, 不按满核跑, 且这两步各自要用户再确认一次
+15. 字号一律由目标宽度反解, 不要硬写; 字距按字号的倍数给, 写成固定像素会让大字号松散小字号挤死
+16. 按字高对齐一律用 `cap_metrics` 那一组工具, 直接拿 Pillow 的包围盒当基线偏移会整段低一个字身
+17. 一个缓动函数的返回值只能当一种用途, 拿它当"动画播完了"的门会让最后几个元素静默消失
+18. 上屏的每个数字都要与代码实际值对账, 不要凭记忆写; 改帧率分辨率采样率之后要重新对一次
+19. 音轨用 AAC 384k, 真峰要从成片解码回来量; 256k 会把瞬态密集素材的解码真峰顶到 0 dBFS 以上
 
 完整坑表与复现条件见 `references/pitfalls.md`, 文本编码见 `references/text-and-encoding.md`.
 
@@ -180,14 +209,16 @@ python scripts/resources.py --for encode --frames <帧数>
 | 2 | `references/prompt-scaffolding.md` | 简报与阶段提示词的七模块, 角色分工, 子代理交接 | 开工写提示词时 |
 | 3 | `references/narrative.md` | 开场语法, 单屏字数与阅读速度, 叙事线索与节奏 | 写文案时 |
 | 4 | `references/content-and-rights.md` | 事实来源判定, 素材许可, 署名, 发布前清单 | 查资料与配图时 |
-| 5 | `references/styles.md` | 八种风格与配乐对应, 选风格的四条判断法 | 定风格时 |
-| 6 | `references/beat-sync.md` | 三层对齐, 段内事件写法, 卡点验证 | 写分镜之前 |
-| 7 | `references/audio-engine.md` | 两套配乐引擎, 音色库, 编排骨架, 客观判据 | 做配乐时 |
-| 8 | `references/visual-engine.md` | 画面引擎 API, 通用组件, 图形配方, 性能 | 写场景时 |
-| 9 | `references/text-and-encoding.md` | 三层编码关与字形体检 | 写任何上屏文本前 |
-| 10 | `references/verification.md` | 各类验收手段与交付自检清单 | 交付前 |
-| 11 | `references/pitfalls.md` | 踩坑的现象, 原因与规避 | 出问题或复盘时 |
-| 12 | `references/conventions.md` | 目录, 命名, 代码, 文档, 协作规范 | 建项目结构时 |
+| 5 | `references/styles.md` | 十种风格与配乐对应, 通用运动语法, 选风格的四条判断法 | 定风格时 |
+| 6 | `references/beat-sync.md` | 三层对齐, 段内四拍职责, 整场反白, 卡点验证 | 写分镜之前 |
+| 7 | `references/audio-engine.md` | 两套配乐引擎, 音色库, 编排骨架, 用户自备音乐, 客观判据 | 做配乐时 |
+| 8 | `references/visual-engine.md` | 画面引擎 API, 字号反解与字高对齐, 通用组件, 图形配方, 性能 | 写场景时 |
+| 9 | `references/three-d.md` | 3D 点云渲染, 相机与光照, 隐藏线刻版, 性能与三条坑 | 需要立体感时 |
+| 10 | `references/print-engine.md` | 印刷与 riso 路线: 纸底, 网点, 叠印, 套印, 逐帧管线的组织 | 做印刷风格时 |
+| 11 | `references/text-and-encoding.md` | 三层编码关与字形体检 | 写任何上屏文本前 |
+| 12 | `references/verification.md` | 各类验收手段与交付自检清单 | 交付前 |
+| 13 | `references/pitfalls.md` | 踩坑的现象, 原因与规避 | 出问题或复盘时 |
+| 14 | `references/conventions.md` | 目录, 命名, 代码, 文档, 协作规范 | 建项目结构时 |
 
 排序只由本表承担, 文件名不带序号.
 新增参考文档时在表里插一行即可, 不需要重命名任何既有文件.

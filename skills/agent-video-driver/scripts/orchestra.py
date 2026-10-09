@@ -353,14 +353,16 @@ def main():
     st = np.stack([left, right])
     # 时间常数必须远大于打击瞬态, 否则压缩器会把拍点压平, 卡点全毁
     st = bus_compress(st, thr=0.22, power=0.50, tau=0.45)
-    fade_in = np.clip(T / 1.0, 0, 1)
-    fade_out = np.clip((DUR - T) / 2.4, 0, 1) ** 1.3
-    st *= np.stack([fade_in * fade_out, fade_in * fade_out])
-    st = warm_master(st, warm=0.42, cut1_amt=0.28, cut2_amt=0.22, lpf=6000, peak=0.95)
+    # 母带链内部顺序固定: 滤波 -> 软限幅 -> 淡入淡出 -> 归一化 -> 过采样真峰压制
+    # 淡入淡出不再写在这里, 由母带链统一负责, 顺序错了整首会偏轻
+    st, mrep = warm_master(st, dur=DUR, fade_in=1.0, fade_out=2.4, warm=0.42,
+                           cut1_amt=0.28, cut2_amt=0.22, lpf=6000, true_peak=-1.0)
 
     path = os.path.join(OUT, OUTNAME)
     shape = write_wav(path, st)
-    print("wrote", path, shape, "peak %.3f" % float(np.max(np.abs(st))))
+    print("wrote", path, shape, "peak %.2f dBFS  true peak %.2f dBTP%s"
+          % (mrep["peak_db"], mrep["true_peak_db"],
+             "" if mrep["true_peak_ok"] else "  [真峰未压住]"))
 
 
 if __name__ == "__main__":

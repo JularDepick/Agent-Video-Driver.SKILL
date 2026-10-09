@@ -25,7 +25,9 @@ import sys
 import numpy as np
 
 import dsp
-from dsp import SR, add, lp_fft, hp_fft, bp_fft, sat, reverb, make_ir, bus_compress, warm_master, write_wav
+from dsp import (SR, add, lp_fft, hp_fft, bp_fft, sat, reverb, make_ir,
+                 bus_compress, warm_master, write_wav, tape_wow, vinyl_bed,
+                 fm_piano as _fm_piano)
 
 if len(sys.argv) > 1:
     DUR = float(sys.argv[1])
@@ -80,6 +82,11 @@ def piano(f, dur=1.1, amp=1.0):
     x += 0.03 * np.sin(2 * np.pi * 4.02 * f * tt) * np.exp(-tt / 0.08)
     env = (1 - np.exp(-tt / 0.006)) * np.exp(-tt / (dur * 0.42))
     return x * env * amp / 1.55
+
+
+def fm_piano(f, dur=1.4, amp=1.0):
+    """FM 电钢主奏: 载波加指数衰减的调制指数再叠慢颤音, 实现见 dsp.fm_piano"""
+    return _fm_piano(f, dur, amp)
 
 
 def pad(freqs, dur, amp=0.5, cutoff=900.0):
@@ -230,6 +237,13 @@ def main():
         if bar_i % 4 == 0:
             add(fx, bell(hz(tones[3] + 24), 2.4, 0.09), t0 + 0.02)
 
+        # 第 4 小节起加一层 FM 电钢主奏, 只落在小节头与第 3 拍, 给全片添一条可跟随的线
+        if bar_i >= 4:
+            lead = tones[3] + (0 if bar_i % 8 < 4 else 2)
+            amp = 0.30 if bar_i % 4 == 0 else 0.22
+            add(music, fm_piano(hz(lead), 1.6, amp), t0)
+            add(music, fm_piano(hz(tones[2] + 12), 1.4, amp * 0.8), t0 + BEAT * 2)
+
     # 段落转场: 切点前起 swell, 切点上落 thump 与钟琴
     for i, cut in enumerate(CUTS[:-1]):
         if cut <= 0.1:
@@ -281,24 +295,27 @@ def main():
 
     st = np.stack([left, right])
 
+    # ---- 磁带味: 缓慢游走的读指针做音高漂移, 再垫一层极低的黑胶底噪
+    # 底噪是氛围不是内容, 电平压在千分之四以内, 超过就会盖住弱奏段落
+    st = tape_wow(st, depth=0.0012, rate=0.63)
+    bed = vinyl_bed(st.shape[-1], level=0.004, seed=20261008)
+    st = st + np.stack([bed, bed])
+
     # ---- 总线压缩: 时间常数 0.09s, 阈值 0.16, 超出部分按 0.55 次幂衰减
     st = bus_compress(st, thr=0.16, power=0.55, tau=0.09)
 
-    # ---- 渐入 0.8s, 渐出 2.2s
-    fade_in = np.clip(T / 0.8, 0, 1)
-    fade_out = np.clip((DUR - T) / 2.2, 0, 1) ** 1.3
-    st *= np.stack([fade_in * fade_out, fade_in * fade_out])
-
-    # ---- 母带: 参数逐项写全, 与改造前的音色平衡对齐, 不受 dsp 默认值变动影响
-    # 淡入淡出原先夹在音色平衡与归一化之间, 改用共享基元后只能整体移到母带链之前
-    # 线性滤波与逐点淡入淡出不可交换, 渐入渐出窗口内会产生约 -67 dBFS 的差异, 不影响听感
-    st = warm_master(st, warm_lo=220, warm_hi=900, warm=0.40,
-                     cut1=3000, cut1_amt=0.45, cut2=6000, cut2_amt=0.35,
-                     lpf=4600, lpf_order=3, hpf=32, peak=0.95, drive=0.9)
+    # ---- 母带链: 滤波 -> 软限幅 -> 淡入淡出 -> 归一化 -> 过采样真峰压制
+    # 淡入淡出由母带链统一负责, 顺序不能调换; 归一化必须在淡入淡出之后
+    st, mrep = warm_master(st, dur=DUR, fade_in=0.8, fade_out=2.2,
+                           warm_lo=220, warm_hi=900, warm=0.40,
+                           cut1=3000, cut1_amt=0.45, cut2=6000, cut2_amt=0.35,
+                           lpf=4600, lpf_order=3, hpf=32, true_peak=-1.0)
 
     path = os.path.join(OUT, OUTNAME)
     shape = write_wav(path, st)
-    print("wrote", path, shape, "peak %.3f" % float(np.max(np.abs(st))))
+    print("wrote", path, shape, "peak %.2f dBFS  true peak %.2f dBTP%s"
+          % (mrep["peak_db"], mrep["true_peak_db"],
+             "" if mrep["true_peak_ok"] else "  [真峰未压住]"))
 
 
 if __name__ == "__main__":

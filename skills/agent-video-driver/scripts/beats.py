@@ -111,23 +111,48 @@ def decode(path):
     return to_wav(path)
 
 
+def frame_count(mono):
+    """按 NFFT 与 HOP 能切出多少帧"""
+    return 1 + (len(mono) - NFFT) // HOP
+
+
+def windowed(mono, a, b):
+    """取第 a 到第 b 帧的加窗数据, 形状 (b-a, NFFT); features 与 log_spectra 共用它"""
+    ii = np.arange(a, b)[:, None] * HOP + np.arange(NFFT)[None, :]
+    return mono[ii] * np.hanning(NFFT)
+
+
+def log_spectra(mono, sr):
+    """
+    逐帧对数谱, 形状 (帧数, NFFT/2+1), 与 features 用同一套分帧与窗
+
+    给接缝检测用: scripts/loops.py 拿它比较各小节的频谱相似度.
+    """
+    n = frame_count(mono)
+    if n < 8:
+        raise RuntimeError("音频太短, 至少需要 %.2f 秒" % (NFFT / sr))
+    out = np.empty((n, NFFT // 2 + 1), np.float32)
+    for a in range(0, n, BLOCK):
+        b = min(n, a + BLOCK)
+        out[a:b] = np.log1p(10.0 * np.abs(np.fft.rfft(windowed(mono, a, b), axis=1)))
+    return out
+
+
 def features(mono, sr):
     """返回 (时间戳, 对数谱正向通量, 低频能量, 逐帧 RMS), 时间戳取窗口末端"""
-    n = 1 + (len(mono) - NFFT) // HOP
+    n = frame_count(mono)
     if n < 8:
         raise RuntimeError("音频太短, 至少需要 %.2f 秒" % (NFFT / sr))
     times = (np.arange(n) * HOP + NFFT) / sr
     freqs = np.fft.rfftfreq(NFFT, 1.0 / sr)
     low_mask = freqs < LOW_HZ
-    win = np.hanning(NFFT)
     flux = np.zeros(n)
     low = np.zeros(n)
     rms = np.zeros(n)
     prev = None
     for a in range(0, n, BLOCK):
         b = min(n, a + BLOCK)
-        ii = np.arange(a, b)[:, None] * HOP + np.arange(NFFT)[None, :]
-        frames = mono[ii] * win
+        frames = windowed(mono, a, b)
         S = np.abs(np.fft.rfft(frames, axis=1))
         L = np.log1p(10.0 * S)
         d = np.empty_like(L)

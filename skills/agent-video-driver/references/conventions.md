@@ -14,6 +14,7 @@
 ├── prompts/                  # brief.md 与各阶段提示词
 ├── script.md                 # 屏文案表, timing.py 的输入
 ├── storyboard.md             # 分镜表与启动确认门
+├── STYLE.md                  # 抽到或点名的风格牌面, 由 style_lottery.py 落盘
 ├── credits.md                # 外部素材的署名与许可
 ├── temp/                     # 一切中间产物, 帧序列, plan.json, 试渲染, 校验图
 ├── audio/                    # 配乐与音效 WAV
@@ -22,6 +23,7 @@
 
 硬性要求:
 
+- **起工程用 `scripts/new_project.py`**, 不要手工照抄目录与模板: 它建目录, 把技能脚本复制成工程内的自包含副本, 生成四份骨架, 并把 BPM, 时长, 帧率, 帧目录前缀写进复制出来的场景模块顶部
 - 技能必须是 `<技能发现根>/<技能名>/SKILL.md` 或 `<技能发现根>/<技能名>.md`, 发现深度只有一层, 嵌套的 `SKILL.md` 不会被识别; 技能发现根本身可以是仓库根, 也可以是仓库根下的一个目录, 本仓库用的是 `skills/`
 - `name` 必须 kebab-case, `description` 必填
 - 中间产物只放 `temp/`, `.agent/` 或 `.agents/`, 不污染交付目录
@@ -39,6 +41,7 @@
 | 阶段提示词 | 阶段名小写下划线加 `.md`, 放在 `prompts/` | `prompts/storyboard.md` |
 | 屏文案表 | 固定 `script.md` | `script.md` |
 | 分镜表 | 固定 `storyboard.md` | `storyboard.md` |
+| 风格牌面 | 固定 `STYLE.md`, 由 `style_lottery.py --write` 落盘 | `STYLE.md` |
 | 署名文件 | 固定 `credits.md` | `credits.md` |
 | 排程结果 | 固定 `plan.json` 与 `plan.md`, 放在 `temp/` | `temp/plan.json` |
 | 帧序列 | 前缀加五位序号 | `temp/frames_nobel/n001200.png` |

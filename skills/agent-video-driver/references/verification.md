@@ -46,7 +46,42 @@ python scripts/qa.py out/成片.mp4 --plan temp/plan.json --anchor 8 14 21 --she
 打印出的数值表 (屏号, 时间, 平均亮度, 高亮占比, 与上一屏的平均绝对差) 是无视觉能力时的主要判据:
 同屏内亮度突然掉到 3 以下说明该屏渲染成了空场; 相邻屏差异接近 0 说明两屏画面几乎一样, 分镜没起到作用.
 
-## 二, 亮度扫描 (整片异常检测)
+## 一之三, GIF 预览 (给用户看运动)
+
+字符图能核对构图, 总览图能核对屏序, 但两者都看不出运动. 风格确认阶段给用户看 GIF 最省事:
+
+```
+python scripts/gifpreview.py temp/frames_proj --from 0 --to 300 --every 5 -o temp/preview.gif
+python scripts/gifpreview.py temp/frames_proj --from 900 --to 1200 --every 3 --fps 15
+```
+
+- 缺省按总帧数与 `--max-frames` (120) 自动定步长, 逐帧存会得到一个几百兆的 GIF
+- 所有帧统一调色板: 逐帧各自量化会让同一块背景在帧间跳色, 看起来像闪
+- **GIF 无声音, 只有 256 色, 只用于看运动, 不能替代用户过目成片**; 它与字符图是互补关系, 不是替代关系
+
+## 二, 亮度标定 (与参考片对齐)
+
+亮度扫描管的是"这一段是不是渲坏了", 亮度标定管的是"整体深浅对不对". 编码与调色的头号问题是整体亮了 2 到 3 倍还看不出来, 因为显示器会骗人, 所以判据必须是与参考片在相同位置量出来的数.
+
+```
+python scripts/brightness.py out/成片.mp4 --at 5 20 45
+python scripts/brightness.py out/成片.mp4 --at 20 --ref 参考片.mp4 --ref-at 20
+python scripts/brightness.py temp/frames_proj/n001200.png
+```
+
+它量三项: 均值, 中位数, p95, 另外给 p99 与暗部亮部占比, 以及中位数的 RGB.
+
+| 量 | 决定什么 | 参考量级 |
+|:---:|:---|:---|
+| 中位数 | 底色深浅 | 暗场片常在 5 到 30 之间; 超过 120 说明这是亮场片的量级 |
+| p95 | 字幕亮度 | 白字应在 200 到 250; 低于 120 说明白字不够亮 |
+| 均值 | 整体曝光 | 与参考片同位置比, 偏离 2 倍以上就是管线有问题 |
+
+**均值偏离参考 2 倍以上时不要用调色去补**. 那通常不是调色问题, 而是某一步多做或少做了一次色彩空间转换, 表现为"怎么调都发灰". 先查管线, 再谈调色.
+
+抽帧用的是输出侧定位 (`-ss` 放在 `-i` 之后), 输入侧定位会跳到目标时间之前最近的关键帧, 抽到的不是目标帧, 判据就失效了.
+
+## 三, 亮度扫描 (整片异常检测)
 
 ```powershell
 ffmpeg -i temp\video_only.mp4 -vf "signalstats,metadata=print:key=lavfi.signalstats.YAVG" -an -f null - 2>&1 | Select-String "YAVG"
@@ -56,7 +91,7 @@ ffmpeg -i temp\video_only.mp4 -vf "signalstats,metadata=print:key=lavfi.signalst
 - 若某帧亮度突然冲到 150 以上, 说明是转场闪白, 应恰好落在切点帧
 - 若中间出现亮度 3 以下的帧, 说明某段渲染失败成了空场
 
-## 三, 画质 (PSNR)
+## 四, 画质 (PSNR)
 
 ```powershell
 ffmpeg -framerate 30 -i temp\frames\n%05d.png -i temp\video_only.mp4 -lavfi "[0:v][1:v]psnr" -f null -
@@ -65,7 +100,7 @@ ffmpeg -framerate 30 -i temp\frames\n%05d.png -i temp\video_only.mp4 -lavfi "[0:
 判据: `average` 高于 45dB 为视觉无损, 低于 40dB 说明 CRF 给大了或码率被压狠了.
 本次 108s 片实测 53.7dB.
 
-## 四, 响度与真峰值
+## 五, 响度与真峰值
 
 ```powershell
 ffmpeg -i <成片> -map 0:a -af ebur128=peak=true -f null -
@@ -77,13 +112,21 @@ ffmpeg -i <成片> -map 0:a -af ebur128=peak=true -f null -
 要求严格时打开 `scripts/assemble.ps1` 的精确响度路径 (量测 `ebur128` 的集成响度, 按差值做精确增益, 再过限幅器), 它不重渲画面.
 只在响度要求宽松时才保留单遍 `loudnorm`.
 
+### 真峰必须从成片里解码回来量
+
+- 要读的是 `True peak` 那一行, 不是 `Peak` 那一行. `Peak` 是采样峰值, 只保证采样点不超; AAC 是有损编码, 重建波形的采样间峰值可以超过原采样点
+- 实测同一段瞬态密集的素材 (底鼓加冲击加刷子) 编解码一趟涨 3.2dB: 波形真峰 -2.5 dBTP, 256k 的 AAC 解码回来量到 +0.72 dBFS, 已经削波
+- 因此音轨码率取 384k, 不要用 256k; 各档实测解码真峰为 256k 加 0.72, 384k 减 2.20, 512k 减 2.38
+- `scripts/assemble.ps1` 已按这条实现: 从成片解码回来量真峰, 超过 `-TruePeakCeiling` (缺省 -1.0 dBFS) 判不合格并退出 5
+- 写盘前的配乐也要先压住真峰, 方法见 `audio-engine.md` 的混音与母带
+
 实测对照: 诺奖片 -13.7 LUFS / -1.5 dBFS / LRA 5.0 LU.
 
-## 五, 音频内部平衡
+## 六, 音频内部平衡
 
 `python scripts/check_audio.py <wav> <BPM>`, 判据见 `audio-engine.md` 的客观判据表.
 
-## 六, 时长与流信息
+## 七, 时长与流信息
 
 ```powershell
 ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_name,codec_type,width,height,r_frame_rate,channels -of default=nw=1 <成片>
@@ -91,7 +134,7 @@ ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_n
 
 判据: 时长精确到毫秒, 视频 h264, 音频 aac, 帧率与设计一致, 音频 48kHz 双声道.
 
-## 七, 体积
+## 八, 体积
 
 1080p 每 30 秒控制在 15MB 以内 (CRF 18 到 20 加轻颗粒).
 若体积暴涨到十倍, 检查是不是把颗粒画进了帧里, 或者用了 CRF 14 以下.
@@ -115,6 +158,8 @@ ffprobe -v error -show_entries format=duration,size -show_entries stream=codec_n
 | 体积 | 文件属性 | 30s 内小于 15MB |
 | 字形 | `check_text.py` 加渲染期审计报告 | 每个字体键渲染前体检无缺字形, 且审计报告里没有"回退链也找不到字形"的项 |
 | 内容 | 发布前清单见 content-and-rights.md | 上屏每行都有出处 |
+| 数字对账 | 从源码取出常量与上屏字符串逐位比对 | 画面上每个数字都等于代码实际值 |
+| 语言与用词 | 脚本扫全部源脚本与场景模块的字符串, 连注释一起扫 | 没有违反用户语言或禁用词要求的残留 |
 | 资源限额 | `resources.py` | 渲染进程数与编码线程数不超过探测建议值, 探测报告的限额已记录在 `storyboard.md` |
 | 两道确认门 | 启动确认门与合成确认门 | 均已取得用户同意并记录在 `storyboard.md` |
 | 清理 | 删除 temp 帧序列 | 交付目录只剩成片与源脚本 |

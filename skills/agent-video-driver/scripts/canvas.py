@@ -60,6 +60,10 @@ _glyph_cache = {}
 _tofu_cache = {}
 _plan_cache = {}
 _gf = {}
+# 逐字排版结果缓存: (字符串, 字体键, 字号, 字距) -> (逐字偏移与宽度, 总宽)
+_layout_cache = {}
+# 字高带缓存: (字体键, 字号) -> (相对基线的上偏移, 下偏移)
+_cap_cache = {}
 
 
 def _font_of(kind, size):
@@ -143,6 +147,39 @@ def text_plan(s, kind):
     p = tuple(runs)
     _plan_cache[key] = p
     return p
+
+
+def _char_layout(s, kind, size, track=0.0):
+    """
+    逐字排版, 返回 ((字符, 字体键, x 偏移, 宽度), ...) 与总宽, 单位都是设计 px
+
+    字体按 size * SS 加载, 所以调用方只需按镜头缩放乘 zoom 即可, 不必重算布局.
+    字距 track 是字号的倍数, 于是字距随字号缩放而不是固定像素, 大字号不会显松散, 小字号不会挤死.
+    每个字符的 x 偏移由同字体片段内的累计 advance 得出, 于是字体自身的字偶距被保留下来.
+    """
+    key = (s, kind, round(float(size), 2), round(float(track), 4))
+    v = _layout_cache.get(key)
+    if v is not None:
+        return v
+    fs = max(6, int(round(size * SS)))
+    adv = float(track) * size * SS
+    items = []
+    x = 0.0
+    for t, k in text_plan(s, kind):
+        f = F(k, fs)
+        prev = 0.0
+        for i, ch in enumerate(t):
+            cur = f.getlength(t[:i + 1])
+            w = cur - prev
+            items.append((ch, k, x / SS, w / SS))
+            prev = cur
+            x += w + adv
+    total = (x - adv) / SS if items else 0.0
+    out = (tuple(items), total)
+    if len(_layout_cache) > 4096:
+        _layout_cache.clear()
+    _layout_cache[key] = out
+    return out
 
 
 # ----------------------------------------------------------------- 渲染期字形审计
@@ -260,6 +297,74 @@ def F(kind, size):
     return f
 
 
+def measure_width(s, size, kind="cnb", track=0.0, zoom=1.0):
+    """
+    量文本宽度, 单位设计 px, 与真正画出来的宽度一致
+
+    走的是与绘制同一份逐字排版结果, 所以按回退后的实际字体累加, 也把字距算进去.
+    """
+    if not s:
+        return 0.0
+    return _char_layout(s, kind, size, track)[1] * zoom
+
+
+def fit_size(s, target_w, kind="cnb", track=0.0, lo=12.0, hi=240.0, iters=24):
+    """
+    反解字号: 让 s 量出来的宽度逼近 target_w, 二分求解
+
+    硬写字号是最常见的翻车点, 标题换一个词就撑出画幅. 指定"这一行要占多宽", 字号由它反解.
+    返回的字号可能贴着 hi, 说明 target_w 相对内容过宽, 调用方可以据此判断是否需要换行.
+    """
+    if not s or target_w <= 0:
+        return float(lo)
+    a, b = float(lo), float(hi)
+    if measure_width(s, b, kind, track) <= target_w:
+        return b
+    for _ in range(max(1, int(iters))):
+        m = (a + b) / 2.0
+        if measure_width(s, m, kind, track) < target_w:
+            a = m
+        else:
+            b = m
+    return (a + b) / 2.0
+
+
+def cap_metrics(kind, size):
+    """
+    大写字母 H 的字高带相对基线的上下偏移, 单位设计 px, 上偏移为负
+
+    Pillow 的 getbbox 返回的 y 相对上伸线, 而绘制锚点 'ls' 与 'la' 相对基线,
+    所以必须减掉 ascent, 否则按字高对齐会让整段文字低一个字身.
+    """
+    key = (kind, round(float(size), 2))
+    v = _cap_cache.get(key)
+    if v is None:
+        f = F(kind, size * SS)
+        ascent = f.getmetrics()[0]
+        _x0, y0, _x1, y1 = f.getbbox("H")
+        v = ((y0 - ascent) / SS, (y1 - ascent) / SS)
+        _cap_cache[key] = v
+    return v
+
+
+def baseline_for_cap_centre(kind, size, cy):
+    """让大写字母的字高带中心落在 cy 上的基线 y"""
+    top, bot = cap_metrics(kind, size)
+    return cy - (top + bot) / 2.0
+
+
+def baseline_for_cap_top(kind, size, cy):
+    """让大写字母的字高带上边落在 cy 上的基线 y"""
+    return cy - cap_metrics(kind, size)[0]
+
+
+def cap_band(kind, size, cy):
+    """字高带上下边, 字高带中心落在 cy 上"""
+    top, bot = cap_metrics(kind, size)
+    h = bot - top
+    return cy - h / 2.0, cy + h / 2.0
+
+
 def C3(r, g, b):
     return (r, g, b)
 
@@ -333,6 +438,41 @@ def pulse(t, decay=6.0):
     return math.exp(-beat_phase(t) * decay)
 
 
+def across(t0, dur, t, ease=None):
+    """
+    子区间进度: 从 t0 起持续 dur 秒, 返回缓动后的 0..1
+
+    dur 传 0 或负数时退化成阶跃. 与 beat_on 的分工是: beat_on 以拍为单位定位入场,
+    across 用秒定位段内的子区间, 例如一段转场里的某半步.
+    """
+    if dur <= 0:
+        return 1.0 if t >= t0 else 0.0
+    return (ease or eo)(clamp((t - t0) / dur))
+
+
+def stagger(i, n, t, t0=0.0, span=0.30, every=0.045, ease=None):
+    """
+    逐项错帧入场: 第 i 项从 t0 加 i 乘 every 起, 用 span 秒走完
+
+    整块一起出现最死板, 逐字或逐元素延迟 0.04 到 0.06 秒就能读出"被依次放上去"的感觉.
+    n 只用于让调用方读起来完整, 计算里不参与.
+    """
+    return across(t0 + i * every, span, t, ease)
+
+
+def impact(x, k=1.25, at=0.35, width=0.14, s=8.0):
+    """
+    落位压印: 在 0..1 的进度上返回先过冲再回落的标量, 峰值约为 k, 落在 x 约等于 at 处
+
+    用途是乘到光晕强度, 线宽或缩放上, 让元素"按下去"一下再稳住.
+    起点严格为 0, 终点收敛到 1; 不要直接当 alpha 用, alpha 的上限是 1, 请自行 clamp.
+    """
+    x = clamp(x)
+    rise = 1.0 - math.exp(-s * x)
+    bump = math.exp(-((x - at) / width) ** 2)
+    return rise * (1.0 + (k - 1.0) * bump)
+
+
 # ----------------------------------------------------------------- geometry
 def G(x, y=None):
     """unit space -> design px (also accepts a list of points)."""
@@ -346,6 +486,20 @@ def G(x, y=None):
 
 
 # ----------------------------------------------------------------- canvas
+def _bbox(mask):
+    """布尔或浮点遮罩的非空包围盒, 返回 (y0, y1, x0, x1); 全空时返回 None"""
+    if not mask.any():
+        return None
+    rows = np.flatnonzero(mask.any(axis=1))
+    cols = np.flatnonzero(mask.any(axis=0))
+    return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+
+
+def _paste_rgb(img, out, box):
+    x0, y0 = box[2], box[0]
+    img.paste(Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB"), (x0, y0))
+
+
 class C:
     def __init__(self):
         ensure_bg()
@@ -468,6 +622,133 @@ class C:
                 self.d.arc(box, a0, a1, fill=color + (int(255 * clamp(alpha * a * glow)),), width=self.pw(w * k))
         self.d.arc(box, a0, a1, fill=color + (int(255 * clamp(alpha)),), width=self.pw(w))
 
+    def wash(self, a, color=None):
+        """
+        整幅盖一层色: a 从 0 到 1 时画面逐渐洗成该色, 缺省洗成亮场底色
+
+        用途是整场反白的过渡: 暗场末尾洗到亮场底色, 亮场开头再从同一色洗回来,
+        两边接得上就不会出现硬切. 它与 fade_to_black 是同一个动作的两种取色.
+        它不是逐像素取反: 取反会把品牌色与人物肤色翻成互补色, 读起来像故障而不是换场.
+        """
+        if a <= 0.004:
+            return
+        col = color if color is not None else LIGHT_PLATE
+        self.d.rectangle([0, 0, W * SS, H * SS], fill=col + (int(255 * clamp(a)),))
+
+    def cloud(self, cov, lum, color=(200, 220, 255), alpha=1.0, depth=None, fog=0.0):
+        """
+        把 3D 点云的覆盖率与明暗缓冲合成到画面, 缓冲尺寸必须是 (H * SS, W * SS)
+
+        cov, lum, depth 由 scripts/three.py 的 render 给出. 这一步工作在画布像素网格上,
+        不受 2D 镜头 cam() 影响: 3D 的机位由 three.Camera 自己定.
+        fog 大于 0 且给了 depth 时越远的点越淡, 用来做空气透视.
+        """
+        cov = np.asarray(cov, np.float32)
+        if cov.shape != (H * SS, W * SS):
+            raise ValueError("点云缓冲尺寸要是 (%d, %d), 收到 %s"
+                             % (H * SS, W * SS, tuple(cov.shape)))
+        a = np.clip(cov, 0.0, 1.0) * clamp(alpha)
+        if fog > 0 and depth is not None:
+            a = a * np.clip(1.0 - fog * np.clip(np.asarray(depth, np.float32), 0.0, 1.0), 0.0, 1.0)
+        # 只在覆盖率的包围盒内做合成: 全画幅是 830 万像素, 而物体通常只占几个百分点,
+        # 全画幅做一次 float 混合要两秒以上, 收进包围盒后是几十毫秒
+        box = _bbox(a > 0.002)
+        if box is None:
+            return
+        y0, y1, x0, x1 = box
+        base = np.asarray(self.img.crop((x0, y0, x1, y1)), np.float32)
+        aa = a[y0:y1, x0:x1][..., None]
+        shade = np.clip(np.asarray(lum, np.float32)[y0:y1, x0:x1], 0.0, 1.2)[..., None]
+        tint = np.asarray(color, np.float32)[None, None, :] * shade
+        _paste_rgb(self.img, base * (1.0 - aa) + np.clip(tint, 0.0, 255.0) * aa, box)
+
+    def composite(self, rgb, alpha=None, mode="over"):
+        """
+        把一整块 numpy 着色缓冲合成到画面, 尺寸必须是 (H * SS, W * SS)
+
+        mode 取 over 时按 alpha 混合, 取 multiply 时相乘. 印刷原语都输出这种缓冲,
+        用它可以一次把整块版面压上来, 而不必逐块 stamp.
+        """
+        rgb = np.asarray(rgb, np.float32)
+        if rgb.shape[:2] != (H * SS, W * SS):
+            raise ValueError("着色缓冲尺寸要是 (%d, %d), 收到 %s"
+                             % (H * SS, W * SS, tuple(rgb.shape[:2])))
+        if alpha is None:
+            a = np.ones(rgb.shape[:2], np.float32)
+        else:
+            a = np.clip(np.asarray(alpha, np.float32), 0.0, 1.0)
+        box = _bbox(a > 0.002)
+        if box is None:
+            return
+        y0, y1, x0, x1 = box
+        base = np.asarray(self.img.crop((x0, y0, x1, y1)), np.float32)
+        aa = a[y0:y1, x0:x1][..., None]
+        src = np.clip(rgb[y0:y1, x0:x1], 0.0, 255.0)
+        if mode == "over":
+            out = base * (1.0 - aa) + src * aa
+        elif mode == "multiply":
+            out = base * (1.0 - aa * (1.0 - src / 255.0))
+        else:
+            raise ValueError("mode 只支持 over 或 multiply, 收到 %r" % (mode,))
+        _paste_rgb(self.img, out, box)
+
+    def stamp(self, mask, color, mode="multiply", alpha=1.0):
+        """
+        把一块遮罩当成一块油墨版压上去, 颜色单一, 缺省用乘法叠印
+
+        与 composite 的分工: 整块版面已经算好颜色时用 composite, 只有一块遮罩与一个
+        油墨色时用 stamp, 后者不必先铺一张全画幅的着色缓冲.
+        """
+        m = np.clip(np.asarray(mask, np.float32), 0.0, 1.0)
+        if m.shape != (H * SS, W * SS):
+            raise ValueError("遮罩尺寸要是 (%d, %d), 收到 %s"
+                             % (H * SS, W * SS, tuple(m.shape)))
+        m = m * clamp(alpha)
+        box = _bbox(m > 0.002)
+        if box is None:
+            return
+        y0, y1, x0, x1 = box
+        base = np.asarray(self.img.crop((x0, y0, x1, y1)), np.float32)
+        aa = m[y0:y1, x0:x1][..., None]
+        k = np.asarray(color, np.float32)[None, None, :]
+        if mode == "multiply":
+            out = base * (1.0 - aa * (1.0 - k / 255.0))
+        elif mode == "over":
+            out = base * (1.0 - aa) + k * aa
+        else:
+            raise ValueError("mode 只支持 over 或 multiply, 收到 %r" % (mode,))
+        _paste_rgb(self.img, out, box)
+
+    def engrave(self, runs, color, w=1.0, alpha=1.0):
+        """
+        把 three.contour_grid 给出的可见折线段画成线, 做刻版效果
+
+        折线坐标与 cloud 同一套口径, 都是画布像素网格坐标, 不受 cam() 影响.
+        传整条等参线会把背面的线也画出来, 所以一定要用 visible_grid 过滤过的段.
+        """
+        if alpha <= 0.004 or not runs:
+            return
+        fill = color + (int(255 * clamp(alpha)),)
+        width = self.pw(w)
+        for pts in runs:
+            if len(pts) < 2:
+                continue
+            self.d.line([(float(x), float(y)) for x, y in pts], fill=fill, width=width)
+
+    def multiply_img(self, screen):
+        """
+        与一张 uint8 屏图做乘法混合, 屏图由 printkit.screen_u8 生成
+
+        乘法在 PIL 里做(C 实现), 比 numpy 浮点混合快一个数量级, 这是印刷风格能逐帧
+        渲染的关键. 屏图是"无墨处 255, 满墨处油墨色", 于是结果等于把这块油墨版
+        乘上去. 尺寸必须与画布像素网格一致.
+        """
+        if screen.size != (W * SS, H * SS):
+            raise ValueError("屏图尺寸要是 (%d, %d), 收到 %s"
+                             % (W * SS, H * SS, tuple(screen.size)))
+        self.img = ImageChops.multiply(self.img, screen.convert("RGB"))
+        self.d = ImageDraw.Draw(self.img, "RGBA")
+
     def bloom(self, cp, r, color, alpha=1.0):
         """additive radial glow (screen blend) centred on a design-px point"""
         if alpha <= 0.006:
@@ -490,12 +771,13 @@ class C:
         self.img.paste(ImageChops.screen(region, sub), (cx0, cy0))
 
     # -- text -------------------------------------------------------------
-    def text(self, p, s, size, color, alpha=1.0, anchor="la", kind="cnb"):
+    def text(self, p, s, size, color, alpha=1.0, anchor="la", kind="cnb", track=0.0):
         """
         画一段文字, 逐字做字形回退
 
-        无回退时走 Pillow 原生的 anchor 定位, 保证历史帧逐像素不变;
-        需要回退时按回退后的实际宽度自己算横向起点, 纵向仍交给 Pillow 的 anchor
+        无回退且不给字距时走 Pillow 原生的 anchor 定位; 需要回退或给了字距时,
+        按逐字排版算出的偏移自己定位, 纵向仍交给 Pillow 的 anchor.
+        track 是字号的倍数, 负值收紧, 正值放宽.
         """
         if alpha <= 0.004 or not s:
             return
@@ -503,45 +785,75 @@ class C:
         if AUDIT is not None:
             AUDIT.record(s, kind, runs)
         fill = color + (int(255 * clamp(alpha)),)
-        if len(runs) == 1 and runs[0][1] == kind:
+        if track == 0.0 and len(runs) == 1 and runs[0][1] == kind:
             self.d.text(self.P(*p), s, font=F(kind, size * SS * self.zoom),
                         fill=fill, anchor=anchor)
             return
-        widths = [self.d.textlength(t, font=F(k, size * SS * self.zoom)) for t, k in runs]
+        items, total = _char_layout(s, kind, size, track)
         px, py = self.P(*p)
         if len(anchor) >= 2:
             h, v = anchor[0], anchor[1:]
         else:
             h, v = "l", "a"
-        total = sum(widths)
+        z = SS * self.zoom
+        total_px = total * z
         if h == "m":
-            px -= total / 2.0
+            px -= total_px / 2.0
         elif h == "r":
-            px -= total
+            px -= total_px
         a = "l" + v
-        for (t, k), w in zip(runs, widths):
-            self.d.text((px, py), t, font=F(k, size * SS * self.zoom), fill=fill, anchor=a)
-            px += w
+        font = None
+        font_key = None
+        for ch, k, x0, _w in items:
+            if k != font_key:
+                font_key = k
+                font = F(k, size * SS * self.zoom)
+            self.d.text((px + x0 * z, py), ch, font=font, fill=fill, anchor=a)
+
+    def text_fit(self, p, s, target_w, color, alpha=1.0, anchor="la", kind="cnb",
+                 track=0.0, lo=12.0, hi=240.0):
+        """
+        画一段文字, 字号由目标宽度反解, 返回用到的字号
+
+        版面里凡是要"这一行占满多宽"的地方都用它, 不要硬写字号.
+        """
+        size = fit_size(s, target_w, kind=kind, track=track, lo=lo, hi=hi)
+        self.text(p, s, size, color, alpha, anchor=anchor, kind=kind, track=track)
+        return size
+
+    def text_cap(self, p, s, size, color, alpha=1.0, cap="center", kind="cnb",
+                 track=0.0, halign="l"):
+        """
+        按大写字母的字高带对齐画一段文字, 而不是按 Pillow 的 ascender 锚点
+
+        cap 取 center 时字高带中心落在 p 的 y 上, 取 top 时字高带上边落在 p 的 y 上.
+        halign 取 l / m / r, 分别以 p 的 x 为左端, 中点, 右端.
+        多行, 多字号混排时用它能保证视觉基线一致; 单行大字用 text() 的 mm 锚点也可以.
+        """
+        x, cy = p
+        if cap == "center":
+            by = baseline_for_cap_centre(kind, size, cy)
+        elif cap == "top":
+            by = baseline_for_cap_top(kind, size, cy)
+        else:
+            raise ValueError("cap 只支持 center 或 top, 收到 %r" % (cap,))
+        if halign not in ("l", "m", "r"):
+            raise ValueError("halign 只支持 l / m / r, 收到 %r" % (halign,))
+        self.text((x, by), s, size, color, alpha, anchor=halign + "s", kind=kind, track=track)
 
     def text_runs(self, s, kind="cnb"):
         """返回该字符串的回退方案, 供场景脚本自查, 返回 (片段, 字体键) 元组"""
         return text_plan(s, kind)
 
-    def measure(self, s, size, kind="cnb"):
-        """量文本宽度, 按回退后的实际字体逐段累加; 无回退时与改造前完全一致"""
-        runs = text_plan(s, kind)
-        if len(runs) == 1 and runs[0][1] == kind:
-            return self.d.textlength(s, font=F(kind, size * SS * self.zoom)) / (SS * self.zoom)
-        w = 0.0
-        for t, k in runs:
-            w += self.d.textlength(t, font=F(k, size * SS * self.zoom))
-        return w / (SS * self.zoom)
+    def measure(self, s, size, kind="cnb", track=0.0):
+        """量文本宽度, 与真正画出来的宽度一致; 按回退后的实际字体累加, 并把字距算进去"""
+        return measure_width(s, size, kind, track, self.zoom)
 
-    def rich(self, p, parts, size, alpha=1.0):
+    def rich(self, p, parts, size, alpha=1.0, track=0.0):
         x, y = p
         for s, kind, col in parts:
-            self.text((x, y), s, size, col, alpha, anchor="la", kind=kind)
-            x += self.measure(s, size, kind)
+            self.text((x, y), s, size, col, alpha, anchor="la", kind=kind, track=track)
+            x += self.measure(s, size, kind, track)
         return x
 
 
@@ -592,6 +904,24 @@ def ensure_bg(force=False, **kw):
     if BG is None or force:
         BG = build_bg(**kw)
     return BG
+
+
+# 亮场底色: 整场反白的那一场用它, 不要在暗场背景上直接压白
+LIGHT_PLATE = (247, 248, 250)
+
+
+def light_plate_bg():
+    """
+    亮场背景三色与配套参数, 展开给 ensure_bg 用
+
+      cv.ensure_bg(force=True, **cv.light_plate_bg())
+
+    亮场的暗角必须减弱, 否则白底四角会发灰; build_bg 的 vignette 是四角的亮度下限,
+    取 0.9 左右是"几乎不压角", 取 0.04 会把四角压成近黑, 那是暗场的取值.
+    光晕也要关掉或大幅降低: 浅底上按暗场的阈值给, 底色自己就够格当高光, 整帧会泛白.
+    """
+    return dict(top=(249, 250, 252), bot=(232, 235, 240), light=(255, 255, 255),
+                light_r=0.9, vignette=0.90)
 
 
 # ----------------------------------------------------------------- shared art

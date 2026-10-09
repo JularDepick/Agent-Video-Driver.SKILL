@@ -25,6 +25,22 @@ PowerShell 的 `Get-Content` 在部分环境按 ANSI 解码, 再用 `Set-Content
 - 治法是 `set PYTHONIOENCODING=utf-8` 再跑, 或者干脆在源码里写转义 `"\u00a5"`
 - 反过来也要注意: PowerShell 回显中文乱码不代表文件坏了, 只说明回显用的不是 UTF-8. 用 Python 读一遍确认才是准的
 
+### 反过来的一层: 读子进程的输出
+
+同一个坑在**接收**方向也成立, 而且症状更隐蔽: `subprocess.run(cmd, text=True)` 在 Windows 上按系统代码页(GBK)解码子进程的输出, 而子进程打印的是 UTF-8 中文, 于是读线程直接抛 `UnicodeDecodeError`, 主进程拿到的是残缺结果或非零退出码.
+
+```
+# 错: 在中文 Windows 上解码子进程的 UTF-8 输出会炸
+subprocess.run(cmd, text=True, capture_output=True)
+
+# 对: 显式指定编码
+subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="replace")
+```
+
+- 自己写脚本调用本技能的其他脚本时, **一律显式给 `encoding`**; 不要依赖 `text=True` 的缺省值
+- 症状是"子进程明明跑成功了, 但父进程说失败", 而且报错里出现 `Exception in thread Thread-1 (_readerthread)`, 见到这个栈就查这里
+- 同理, 读子进程写出的文本文件时也要显式 `encoding="utf-8"`
+
 ## 三, 渲染层 (最容易翻车, 也最难自查)
 
 画面上的每一个字都要由某个字体的某个字形来画, 字体没有这个字形时 Pillow 会画一个空心方框, 而且**不报错**.
@@ -38,7 +54,7 @@ PowerShell 的 `Get-Content` 在部分环境按 ANSI 解码, 再用 `Set-Content
 | 希腊字母 | θ λ β α Δ | 一般都有, 但仍需体检 |
 | 箭头与勾叉 | → ← ↑ ↓ ✓ ✗ | 中文字体与等宽字体覆盖不一致 |
 | 生僻字与异体字 | 硤 硖 卡甘 | 简繁差异, 人名地名最常见 |
-| 全角与半角混排 | （） : ; | 不报错但版式会歪, 见 08-conventions |
+| 全角与半角混排 | `（` `）` `:` `;` | 不报错但版式会歪, 见 `conventions.md` 的文档规范 |
 
 ### 同一个字符在不同字体里可能一个有, 一个没有
 

@@ -35,14 +35,18 @@ This 108-second explainer was made from scratch by the skill: the picture is com
 | Capability | Description |
 |:---:|:---|
 | Prompt scaffolding | One shared brief plus a seven-module prompt per stage (role / context / task / specs / style / avoid / check). Subagents receive only the brief and the current stage prompt, so their context stays clean |
-| Content and compliance floor | Every fact traces to a source and is dropped otherwise, every asset license is checked by hand and credited, no AI-drawn faces and AI content is labelled, and the picture depends only on time with seeded randomness |
+| Content and compliance floor | Every fact traces to a source and is dropped otherwise, every asset license is checked by hand and credited, no AI-drawn faces and AI content is labelled, and the picture depends only on time with seeded randomness. Brand colours are measured rather than guessed, and every number on screen is reconciled against the code |
 | Copy and pacing | Opening grammar, a quantified reading-speed model for on-screen text, narrative through-lines, and key lines landing on the bar where the music changes energy |
-| Beat sync | Three layers of alignment (structure, events, sound effects) with two complementary verification methods: whole-film motion peaks and per-anchor frame pairs |
-| Picture engine | Supersampled anti-aliased canvas, easing and beat primitives, glow and additive bloom, reusable UI components, eight ready-to-apply looks |
-| Score engine | Orchestral and electronic voice libraries, a ten-section orchestration table against monotony, a warm mastering chain against harshness, plus objective criteria |
-| Vision-free verification | Character-map composition checks, before/after frame comparison, contact sheets, glyph inspection, frame differencing, PSNR, loudness and true peak |
-| Encoding | Frame encoding, mixdown, loudness normalisation, stream and quality checks, in one command |
+| Beat sync | Three layers of alignment (structure, events, sound effects), a per-beat duty table inside each segment, and two complementary verification methods: whole-film motion peaks and per-anchor frame pairs |
+| Picture engine | Supersampled anti-aliased canvas, easing and beat primitives, font size solved from a target width, cap-height alignment, tracking and per-glyph stagger, landing impact, glow and additive bloom, reusable UI components |
+| 3D and print | Pure-Python 3D point-cloud rendering with hidden-line engraving; a print and riso route with paper stock, halftone screens, separations, multiply overprint and misregistration |
+| Look deck | 17 ready-to-apply looks drawn at random by default, with an exclude list for the previous film, and the drawn card written into the project as `STYLE.md` |
+| Score engine | Orchestral and electronic voice libraries, a ten-section orchestration table against monotony, and a warm mastering chain that includes oversampled true-peak limiting |
+| User-supplied music | Beat-grid detection, seamless-loop search, bar-accurate cutting with the grid preserved, and a re-measure of the grid afterwards |
+| Vision-free verification | Character-map composition checks, before/after frame comparison, contact sheets, GIF motion previews, brightness calibration against a reference, glyph inspection, frame differencing, PSNR, and true peak measured back from the delivered file |
+| Encoding | Frame encoding, mixdown, loudness normalisation, true-peak acceptance, stream and quality checks, in one command |
 | Process safety gates | One consent gate before starting, then a separate one before the full render and before the final assembly; heavy steps probe cores, load, memory and disk first and run within the recommended limits instead of claiming every core |
+| Project scaffolding | One command to start a project: create the tree, copy the scripts in as a self-contained set, generate four skeletons and fill in the top-level constants |
 
 ## Workflow
 
@@ -53,7 +57,7 @@ This 108-second explainer was made from scratch by the skill: the picture is com
 
 Each stage lands an inspectable artifact before the next one starts. The first three stages involve the user, either step by step or in a single confirmation pass.
 
-Two delivery checkpoints are never skipped: three visibly different looks each rendered on the first screen so the user can choose, and a roughly ten-second opening preview reviewed before the full render.
+Two delivery checkpoints are never skipped: the look is drawn from the deck by default and the drawn card is rendered on the first screen for the user to confirm, and a roughly ten-second opening preview is reviewed before the full render.
 
 ## Quick start
 
@@ -69,6 +73,9 @@ Before the full render, and again before the final assembly, it asks a second ti
 To walk through it by hand, run these from inside the skill directory:
 
 ```
+python scripts/new_project.py ../my-video --bpm 100 --dur 108 --prefix proj
+cd ../my-video
+python scripts/style_lottery.py --write . --tone light
 python scripts/check_env.py
 python scripts/timing.py script.md --bpm 100 --bars 45
 python scripts/orchestra.py 108 100 score.wav "7.2,16.8,26.4,36,50.4,64.8,79.2,91.2,103.2"
@@ -82,7 +89,7 @@ pwsh -File scripts/assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav 
 python scripts/qa.py out/final.mp4 --plan temp/plan.json
 ```
 
-Copy `script.md` and `scene_module.py` out of `templates/` into your working directory before filling them in, as described in `templates/screen-script.md` and `templates/scene_module.py`.
+`new_project.py` copies the scripts in as a self-contained set and generates four skeletons, so the rest runs from inside the project directory. When starting a project by hand, copy `script.md` and `scene_module.py` out of `templates/` before filling them in, as described in `templates/screen-script.md` and `templates/scene_module.py`.
 On machines with only Windows PowerShell 5.1, replace `pwsh` with `powershell`; the script runs under both.
 
 ## Requirements
@@ -140,6 +147,7 @@ Section ten of `SKILL.md` carries the reading order for the reference documents.
 
 - **Code-rendered rather than generative**: the picture and the score are computed, so the same frame renders identically every time, beat cuts are quantifiable, and a change is a parameter change. The cost is a bounded visual range, unsuited to live-action footage or on-camera people
 - **Score first**: fixing the music fixes the timeline, so picture cuts follow score cuts and no post-hoc alignment is needed
+- **The look is drawn, not repeated**: the engine can make very different films but left to itself keeps making its loudest one, so the default is a draw from a deck with the previous card excluded, and more than half the deck is quiet
 - **Verification without vision**: most agents cannot see what they rendered, so acceptance rests on quantifiable substitutes, and the agent states plainly that the look still needs human review
 - **No external dependencies**: Python standard library plus numpy plus Pillow plus FFmpeg. Offline, version-controlled, no surprises
 

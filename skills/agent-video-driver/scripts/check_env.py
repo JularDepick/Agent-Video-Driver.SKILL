@@ -110,6 +110,24 @@ def main():
             print("%s %-8s %s" % (NO, mod, e))
 
     print("-" * 62)
+    print("渲染能力")
+    # 3D 点云只用 numpy, 没有额外依赖; 这里探的是它能不能真的跑起来
+    try:
+        import numpy as _np
+        import three as _th
+        fn = _th.knot_tube(tube=0.25, p=3, q=2)
+        P, N, _shape = _th.sample(fn, 48, 16)
+        cam = _th.Camera(eye=(0, 0.7, 7.0), target=(0, 0, 0), fov=30, w=320, h=180)
+        cov, lum, _depth = _th.render(cam, P, N, splat=1)
+        _ = _th.visible_grid(cam, P, _depth, N=N)
+        _ = _th.min_filter(cov, 1)
+        _ = _np.fft.rfft(_np.zeros(64))
+        print("%s %-22s 3D 点云可用 (采样, 渲染, 可见性, 邻域最小值, FFT 全部跑通)" % (OK, "three.py"))
+    except Exception as e:
+        print("%s %-22s %s" % (NO, "three.py", str(e)[:70]))
+        print("    影响: 立体段落不可用, 画面只能走 2D 路线; 其余能力不受影响")
+
+    print("-" * 62)
     fonts = {
         "中文粗体 msyhbd": r"C:\Windows\Fonts\msyhbd.ttc",
         "中文常规 msyh": r"C:\Windows\Fonts\msyh.ttc",

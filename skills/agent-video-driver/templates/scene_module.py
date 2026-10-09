@@ -6,6 +6,8 @@
   python scene_module.py render 0 810          渲染帧区间, 供分区间并行
   python scene_module.py segments              打印每段起止帧核对
   python scene_module.py plan [进程数]         打印并行渲染的帧区间与逐区间命令
+  python scene_module.py at <段号>:<拍号>      渲该拍的单帧全分辨率, 用于逐场审阅
+  python scene_module.py stills <段号> [帧数]  该段等距抽若干帧拼一张长图
 
 plan 不给进程数时取 scripts/resources.py 的建议, 导入不到就退回内置规则
 每个区间要用独立的进程各跑各的, 不要用共享队列 (沙箱会拦命名管道)
@@ -14,11 +16,16 @@ plan 不给进程数时取 scripts/resources.py 的建议, 导入不到就退回
   1 temp/plan.json (由 scripts/timing.py 从屏文案表排出), 幕边界即段落边界
   2 本文件顶部的 SEG 常量
 无论用哪一种, 渲染前都要跑一次 segments 打印起止帧核对
+
+逐场审阅的顺序建议: 底板与环境光 -> 主体 -> 运动 -> 版面家具, 每一档先用 at 看一帧,
+一段做完用 stills 抽多帧看时间轴, 最后才跑 probe 与全量渲染.
 """
 import os
 import sys
 import json
 import math
+
+from PIL import Image
 
 import canvas as cv
 
@@ -98,11 +105,16 @@ def s_title(c, t):
     cv.motes(c, t, 0.8)
     a = cv.beat_on(lb, 1.0, 0.7)
     if a > 0:
-        c.bloom((cv.W / 2, 404), 1100, (34, 74, 130), 0.30 * a)
-        c.text((cv.W / 2, 404 + cv.lerp(28, 0, a)), "主标题写这里", 96, TXT, a, anchor="mm")
+        # impact 让光晕在落位瞬间过冲一下再回落, 读起来像"按下去"; 它不是 alpha, 用前先 clamp
+        imp = cv.impact(a)
+        c.bloom((cv.W / 2, 372), 1100, (34, 74, 130), 0.30 * min(imp, 1.6) * a)
+        # 字号由目标宽度反解, 换一个更长的标题也不会撑出画幅;
+        # 纵向用 text_cap 按字高带对齐, 中英混排时比 mm 锚点稳
+        size = cv.fit_size("主标题写这里", cv.W * 0.62)
+        c.text_cap((cv.W / 2, 372), "主标题写这里", size, TXT, a, cap="center", halign="m")
     b = cv.beat_on(lb, 3.0, 0.7)
     if b > 0:
-        c.text((cv.W / 2, 492), "副标题写这里", 42, ACC, b * 0.95, anchor="mm")
+        c.text((cv.W / 2, 560), "副标题写这里", 42, ACC, b * 0.95, anchor="mm")
     caption(c, lb, 5.0, "一句点题的短句", DIM, 30, y=800)
 
 
@@ -159,11 +171,19 @@ def print_segments():
     """
     逐段打印起止秒与起止帧, 差一段整片错位
     段数与 SCENES 长度不一致时必须先改到这里一致再渲染
+    段表本身也在这里体检: 非单调或越过片长都是硬错误, 不体检的话会渲出空段或截断段
     """
     src = "temp/plan.json" if os.path.exists(PLAN) else "SEG_OF_DEMO 常量"
     print("段落来源: %s   共 %d 段, %d 个场景函数" % (src, len(SEG_OF) - 1, len(SCENES)))
     if len(SEG_OF) - 1 != len(SCENES):
         print("  警告: 段数与场景函数个数不一致, SCENES 必须先改到与段落表一一对应", flush=True)
+    for j in range(len(SEG_OF) - 1):
+        if SEG_OF[j + 1] <= SEG_OF[j]:
+            print("  错误: 段 %02d 的终点 %.3f 不大于起点 %.3f, 段表必须严格递增"
+                  % (j, SEG_OF[j + 1], SEG_OF[j]), flush=True)
+    if SEG_OF[-1] > cv.DUR + 1e-6:
+        print("  错误: 段表终点 %.3f 秒越过片长 %.3f 秒, 先改段表或改时长"
+              % (SEG_OF[-1], cv.DUR), flush=True)
     for j in range(len(SEG_OF) - 1):
         a, b = SEG_OF[j], SEG_OF[j + 1]
         print("  段 %02d  %.3f 到 %.3f 秒   帧 %d 到 %d   共 %d 帧"
@@ -226,6 +246,80 @@ def print_plan(explicit=None):
     print("提醒: 机器空闲时可以再提高进程数, 例如 python scene_module.py plan 8")
 
 
+def seg_span(k):
+    """第 k 段的 (起点秒, 终点秒); 段号越界时给出可用范围并返回 None"""
+    if k < 0 or k + 1 >= len(SEG_OF):
+        print("段号越界: %d, 可用范围是 0 到 %d" % (k, len(SEG_OF) - 2))
+        return None
+    return SEG_OF[k], SEG_OF[k + 1]
+
+
+def shot_at(spec):
+    """
+    渲该拍的单帧全分辨率, spec 形如 3:1.5 (第 3 段第 1.5 拍)
+
+    逐场实现时用它确认底板, 主体, 运动, 版面家具每一档的落点, 比整段渲一遍便宜得多
+    """
+    if ":" not in spec:
+        print("用法: python scene_module.py at <段号>:<拍号>, 例如 3:1.5")
+        return 2
+    head, _, tail = spec.partition(":")
+    try:
+        k = int(head)
+        beat = float(tail)
+    except ValueError:
+        print("段号要是整数, 拍号可以是小数: %s" % spec)
+        return 2
+    sp = seg_span(k)
+    if sp is None:
+        return 2
+    t = sp[0] + beat * cv.BEAT
+    if t >= sp[1]:
+        print("警告: 第 %s 拍落在段尾之外 (段长 %.3f 拍), 渲的是段尾之前的内容"
+              % (beat, (sp[1] - sp[0]) / cv.BEAT))
+    frame = int(round(t * cv.FPS))
+    os.makedirs("temp", exist_ok=True)
+    path = os.path.join("temp", "at_%02d_%s.png" % (k, tail.replace(".", "p")))
+    cv.audit_start()
+    cv.render_frame(pick, t, cam(t)).save(path)
+    cv.audit_report("单帧 段 %02d 第 %s 拍 (帧 %d)" % (k, beat, frame))
+    cv.audit_stop()
+    print("段 %02d 第 %s 拍 = %.3f 秒 = 第 %d 帧" % (k, beat, t, frame))
+    print("wrote %s" % path)
+    return 0
+
+
+def stills(k, n=7, width=480):
+    """
+    该段等距抽 n 帧横向拼成一张长图, 用来看时间轴
+
+    单帧看不出缓动对不对, 抽帧长图能把入场顺序与错帧一眼看完
+    """
+    sp = seg_span(k)
+    if sp is None:
+        return 2
+    n = max(2, int(n))
+    a, b = sp
+    ts = [a + (b - a) * (i + 0.5) / n for i in range(n)]
+    cv.audit_start()
+    frames = [cv.render_frame(pick, t, cam(t)) for t in ts]
+    cv.audit_report("抽帧长图 段 %02d" % k)
+    cv.audit_stop()
+    h = max(1, int(round(frames[0].height * width / float(frames[0].width))))
+    sheet = Image.new("RGB", (width * n, h), (0, 0, 0))
+    for i, im in enumerate(frames):
+        sheet.paste(im.resize((width, h), Image.LANCZOS), (i * width, 0))
+    os.makedirs("temp", exist_ok=True)
+    path = os.path.join("temp", "stills_%02d.png" % k)
+    sheet.save(path)
+    print("段 %02d  %.3f 到 %.3f 秒, 等距抽 %d 帧" % (k, a, b, n))
+    for i, t in enumerate(ts):
+        print("  第 %d 格  第 %d 帧  %.3f 秒  段内第 %.2f 拍"
+              % (i, int(round(t * cv.FPS)), t, (t - a) / cv.BEAT))
+    print("wrote %s" % path)
+    return 0
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "probe"
     # plan 只算分工不画帧, 不必构建背景
@@ -244,6 +338,27 @@ def main():
     if mode == "segments":
         print_segments()
         return
+    if mode == "at":
+        if len(sys.argv) < 3:
+            print("用法: python scene_module.py at <段号>:<拍号>, 例如 3:1.5")
+            sys.exit(2)
+        sys.exit(shot_at(sys.argv[2]))
+    if mode == "stills":
+        k = 0
+        n = 7
+        if len(sys.argv) > 2:
+            try:
+                k = int(sys.argv[2])
+            except ValueError:
+                print("段号必须是整数: %s" % sys.argv[2])
+                sys.exit(2)
+        if len(sys.argv) > 3:
+            try:
+                n = int(sys.argv[3])
+            except ValueError:
+                print("帧数必须是整数: %s" % sys.argv[3])
+                sys.exit(2)
+        sys.exit(stills(k, n))
     if mode == "probe":
         print_segments()
         os.makedirs(os.path.join("temp", "probe"), exist_ok=True)
