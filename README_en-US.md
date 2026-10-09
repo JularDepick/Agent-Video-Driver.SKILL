@@ -45,15 +45,16 @@ This 108-second explainer was made from scratch by the skill: the picture is com
 | User-supplied music | Beat-grid detection, seamless-loop search, bar-accurate cutting with the grid preserved, and a re-measure of the grid afterwards |
 | Vision-free verification | Character-map composition checks (ink mode for bright scenes, gradient mode for line art), before/after frame comparison, a per-screen final check table before encoding (with act number and p95), a screen-to-act-to-scene-function lookup, contact sheets, GIF motion previews, brightness measurement with multi-input and markdown output, glyph inspection from the plan and scene source, redaction scanning, standalone PSNR re-measurement, and true peak measured back from the delivered file |
 | Encoding | Frame encoding, mixdown, loudness normalisation, true-peak acceptance, stream and quality checks; long films take the batched route with resume, `--redo` for selected batches, a read-only progress front end that polls the state file, and pre-flight interception of frame holes and batch mismatches; optional hardware encoders, plus an encode-route benchmark that separates decode, filter and encode costs first |
-| Process safety gates | One consent gate before starting (cost, palette, confirmation mode, batching, credit, file name), then a separate one before the full render and before the final assembly; heavy steps probe cores, load, memory and disk first and run within the recommended limits instead of claiming every core; any node that needs a user decision hands over the artifact path before asking |
+| Process safety gates | A requirements sheet asks everything in one pass before starting (aspect 16:9 / 9:16 / 1:1 / custom, duration, fps, BPM, music engine, palette, style source, confirmation mode, batching, credit, file name, output directory, each with options and defaults; answer the whole sheet at once or take all defaults), then a separate gate before the full render and before the final assembly; heavy steps probe cores, load, memory and disk first and run within the recommended limits instead of claiming every core; any node that needs a user decision hands over the artifact path before asking |
 | Cross-platform fonts | Cross-platform detection for CJK and monospace fonts: environment-variable directory, fc-list and system font folders in three tiers, with a generated `FONT_PATH` snippet; parallel rendering spawns one process per frame range with the frames directory and count taken from the scene module |
-| Project scaffolding | One command to start a project: create the tree, copy the scripts in as a self-contained set, generate four skeletons and fill in the top-level constants |
+| Aspect adaptivity | The rendering engine supports 16:9 / 9:16 / 1:1 presets plus custom even dimensions; component coordinates derive from the canvas short side, so portrait and square are fully composed layouts rather than crops; resource budgets scale with canvas area |
+| Project scaffolding | One command to start a project: create the tree, copy the scripts in as a self-contained set, generate four skeletons and fill in the top-level constants; `--aspect` sets the canvas, written into the scene module along with `--bpm --dur --fps` |
 
 ## Workflow
 
 ```
 0 probe -> 1 brief and prompts -> 2 content and copy -> 3 look and storyboard
-  -> 4 score first -> 5 segmented render -> 5.5 per-screen final check -> 6 encode -> 7 objective acceptance
+  -> 4 score first -> 5 segmented render -> 6 per-screen final check -> 7 encode -> 8 objective acceptance
 ```
 
 Each stage lands an inspectable artifact before the next one starts. The first three stages involve the user, either step by step or in a single confirmation pass.

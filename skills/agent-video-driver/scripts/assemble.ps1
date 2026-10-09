@@ -4,7 +4,7 @@
 #   PowerShell 7 (装了才有 pwsh):        pwsh -File scripts\assemble.ps1 -Frames temp\frames_proj -Audio audio\score.wav -Out out\成片.mp4
 # 只装了 5.1 时不要写 pwsh (根本不存在); 5.1 下务必带 -ExecutionPolicy Bypass,
 # 否则默认执行策略会拦下未签名脚本, 报 is not digitally signed.
-# 长片或需要分批与断点续跑时改用 scripts\assemble_core.py 的分批路线, 见 references\workflow.md 阶段 6
+# 长片或需要分批与断点续跑时改用 scripts\assemble_core.py 的分批路线, 见 references\workflow.md 阶段 7
 #
 # 编码器: -Encoder 缺省 libx264 (CPU 路线, 画质与体积的标定口径). 换成 h264_nvenc 之类的硬件
 # 编码器时, 脚本会把 preset 映射到 NVENC 的 p7/p6/p5/p4, 把 crf 映射到 -rc vbr -cq.

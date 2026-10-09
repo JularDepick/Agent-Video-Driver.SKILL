@@ -7,9 +7,9 @@
   python scripts/qa.py temp/short.mp4 --plan temp/plan.json --sheet 12
 
 两种输入模式
-  帧序列模式: 输入是帧目录 (阶段 5.5 逐屏终检, 编码前跑), 每屏直接取屏内 80% 处那一帧
+  帧序列模式: 输入是帧目录 (阶段 6 逐屏终检, 编码前跑), 每屏直接取屏内 80% 处那一帧
     的 n%05d.png, 跳过 ffprobe 与锚点对比, 时长以 plan 为准
-  成片模式: 输入是 mp4 (阶段 7 客观验收, 编码后跑), 用 ffprobe 精确抽帧并做锚点对比
+  成片模式: 输入是 mp4 (阶段 8 客观验收, 编码后跑), 用 ffprobe 精确抽帧并做锚点对比
 
 做五件事
   1 成片模式: ffprobe 读实际时长与流信息, 与 plan.json 的 duration 与 fps 对照,
