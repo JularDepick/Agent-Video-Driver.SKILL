@@ -7,32 +7,73 @@
   不单调: 按切点分段的配器表, 每段换乐器组合与音区 (段数超过表行数时循环取用),
           旋律用动机加变奏, 力度有起落弧线
 
-  python orchestra.py <时长秒> <BPM> <输出文件名> <切点逗号分隔>
-  python orchestra.py 108 100 score_orch.wav "7.2,16.8,26.4,36,50.4,64.8,79.2,91.2,103.2"
+  python orchestra.py <时长秒> <BPM> <输出文件名> [切点逗号分隔] [输出目录]
+  python orchestra.py 108 100 score_orch.wav "7.2,16.8,26.4,36,50.4,64.8,79.2,91.2,103.2" audio
+  python orchestra.py 288 100 score.wav "12,24,36" audio --sr 24000
+  python orchestra.py 288 100 score.wav "12,24,36" audio --chunk 60
+
+位置参数 (前 5 个与旧版完全一致):
+  1 时长秒       2 BPM       3 输出文件名 (纯文件名, 不要带目录;
+                 目录走第 5 个参数, 写成 audio/score.wav 会拼出 audio/audio/...)
+  4 切点逗号分隔  5 输出目录 (缺省 audio)
+
+选项:
+  --sr N      采样率覆盖. 低内存机器 (物理内存 4GB 上下) 上全长度 48kHz 多总线会
+              OOM, 降到 24000 先合成, 编码阶段再用 ffmpeg -ar 48000 上采样回来;
+              对管弦乐可接受. 缺省用 dsp.SR = 48000
+  --chunk 秒  分段写盘: 按秒数把时间轴切段, 每段独立合成与母带后落盘, 末尾用
+              ffmpeg concat 拼接. 缺省不分段 (整条一次算), 段与段的接缝落在
+              切点上时不给 (不给则只在切点处切). 长片加低内存时两者可同用
 """
+import argparse
 import os
+import subprocess
 import sys
+import tempfile
 
 import numpy as np
 
 import dsp
 from dsp import SR, add, lp_fft, hp_fft, bp_fft, sat, hz, reverb, make_ir, bus_compress, warm_master, write_wav
 
-DUR = float(sys.argv[1]) if len(sys.argv) > 1 else 108.0
-BPM = float(sys.argv[2]) if len(sys.argv) > 2 else 100.0
-OUTNAME = sys.argv[3] if len(sys.argv) > 3 else "score_orch.wav"
+
+def _parse_args(argv):
+    """前 5 个位置参数保持旧口径, 其后接选项; 兼容直接运行与被 import"""
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("dur", nargs="?", type=float, default=108.0)
+    ap.add_argument("bpm", nargs="?", type=float, default=100.0)
+    ap.add_argument("outname", nargs="?", default="score_orch.wav")
+    ap.add_argument("cuts", nargs="?", default="")
+    ap.add_argument("out", nargs="?", default="audio")
+    ap.add_argument("--sr", dest="sr", type=int, default=None)
+    ap.add_argument("--chunk", dest="chunk", type=float, default=0.0)
+    a, unknown = ap.parse_known_args(argv)
+    if unknown:
+        raise SystemExit("未知参数: %s" % " ".join(unknown))
+    return a
+
+
+_A = _parse_args(sys.argv[1:])
+DUR = _A.dur
+BPM = _A.bpm
+OUTNAME = _A.outname
+OUT = _A.out
+os.makedirs(OUT, exist_ok=True)
 BEAT = 60.0 / BPM
 BAR = 4 * BEAT
+if _A.sr:
+    # 低内存路线: 采样率在 import 期被覆盖, 之后所有音色与总线都按它走
+    dsp.SR = int(_A.sr)
+SR = dsp.SR
 N = int(round(SR * DUR))
 T = np.arange(N) / SR
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = sys.argv[5] if len(sys.argv) > 5 else "audio"
-os.makedirs(OUT, exist_ok=True)
 
-if len(sys.argv) > 4:
-    CUTS = [float(x) for x in sys.argv[4].split(",")]
+if _A.cuts:
+    CUTS = [float(x) for x in _A.cuts.split(",")]
 else:
     CUTS = [round(k * BAR, 4) for k in (3, 7, 11, 15, 21, 27, 33, 38, 43)]
+CHUNK = float(_A.chunk or 0.0)
 
 rng = np.random.default_rng(20261009)
 
@@ -274,15 +315,104 @@ def section_of(bar_i):
 
 
 def main():
-    strings_b = np.zeros(N)
-    harp_b = np.zeros(N)
-    lead_b = np.zeros(N)
-    cnt_b = np.zeros(N)
-    low_b = np.zeros(N)
-    perc_b = np.zeros(N)
-    air_b = np.zeros(N)
+    if CHUNK > 0:
+        render_chunked()
+        return
+    st = render_master(0.0, DUR)
+    path = os.path.join(OUT, OUTNAME)
+    shape = write_wav(path, st)
+    print("wrote", path, shape, "peak %.2f dBFS  true peak %.2f dBTP%s"
+          % (_LAST_REPORT["peak_db"], _LAST_REPORT["true_peak_db"],
+             "" if _LAST_REPORT["true_peak_ok"] else "  [真峰未压住]"))
 
-    nbars = int(DUR // BAR)
+
+def render_chunked():
+    """
+    分段写盘: 每段独立合成与母带, 落盘成 wav 后用 ffmpeg concat 拼接
+
+    切段边界优先落在切点上 (切点两侧的力度弧线与滚镲各归各段, 不会截半), 段太长时
+    按 CHUNK 再细分; 段与段是不同 ffmpeg 进程的输出, 采样率与声道一致, 拼接无损
+    """
+    edges = [0.0]
+    for cu in CUTS:
+        if edges[0] < cu < DUR:
+            edges.append(cu)
+    edges.append(DUR)
+    # 仍超过 CHUNK 的段再均分
+    final = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        span = b - a
+        k = max(1, int(-(-span // CHUNK)))
+        for j in range(k):
+            final.append((a + span * j / k, a + span * (j + 1) / k))
+    print("分段写盘: %d 段" % len(final))
+    # 不用 tempfile.mkdtemp: 它建出的目录在部分沙箱下拒绝写入文件, 用确定性目录更稳
+    tmpdir = os.path.join(OUT, "_chunks")
+    if os.path.isdir(tmpdir):
+        for p in os.listdir(tmpdir):
+            try:
+                os.remove(os.path.join(tmpdir, p))
+            except OSError:
+                pass
+    else:
+        os.makedirs(tmpdir)
+    parts = []
+    try:
+        for i, (a, b) in enumerate(final):
+            globals()["_SEG"] = (a, b)
+            st = render_master(a, b)
+            part = os.path.join(tmpdir, "part_%03d.wav" % i)
+            write_wav(part, st)
+            parts.append(part)
+            print("  段 %d/%d  %.2f 到 %.2f 秒  已落盘" % (i + 1, len(final), a, b),
+                  flush=True)
+        # 拼接: 列表只写 basename, 与分段文件同目录解析
+        lst = os.path.join(tmpdir, "list.txt")
+        with open(lst, "w", encoding="ascii") as f:
+            for p in parts:
+                f.write("file '%s'\n" % os.path.basename(p))
+        out_path = os.path.join(OUT, OUTNAME)
+        code = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat",
+                               "-safe", "0", "-i", lst, out_path]).returncode
+        if code != 0:
+            print("ffmpeg 拼接失败, 分段保留在 %s" % tmpdir)
+            raise SystemExit(code)
+        print("wrote", out_path, "(%d 段拼接, 段临时目录 %s)" % (len(parts), tmpdir))
+    finally:
+        if os.path.isdir(tmpdir):
+            for p in os.listdir(tmpdir):
+                try:
+                    os.remove(os.path.join(tmpdir, p))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmpdir)
+            except OSError:
+                print("提示: 段临时目录没有清掉: %s (不影响成片)" % tmpdir)
+
+
+_LAST_REPORT = {"peak_db": 0.0, "true_peak_db": 0.0, "true_peak_ok": True}
+
+
+def render_master(seg_a, seg_b):
+    """
+    合成 [seg_a, seg_b) 一段并母带; seg 覆盖全片时就是原整条路线
+
+    原来的 main() 主体搬到这里: 全片调用 render_master(0, DUR) 行为与旧版完全一致,
+    分段时每段独立跑同一条链, 时间参数全部用绝对秒, 所以各段拼起来与整条等价
+    """
+    seg_n = int(round((seg_b - seg_a) * SR))
+    strings_b = np.zeros(seg_n)
+    harp_b = np.zeros(seg_n)
+    lead_b = np.zeros(seg_n)
+    cnt_b = np.zeros(seg_n)
+    low_b = np.zeros(seg_n)
+    perc_b = np.zeros(seg_n)
+    air_b = np.zeros(seg_n)
+
+    bar_first = int(seg_a / BAR)
+    bar_last = int(-(-seg_b // BAR))
+    nbars = bar_last - bar_first
     # 打印每段的配器取行, 与"每段起止帧必须核对"同理: 全片落在一行上就是没有层次
     print("配器分段: %d 段, 表 %d 行, 第 0 段引子, 其余循环取用"
           % (len(SEG_BOUNDS) - 1, len(SECTIONS)))
@@ -291,7 +421,8 @@ def main():
         s = SECTIONS[row]
         print("  段 %02d  %.2f 到 %.2f 秒  表行 %02d  主奏 %-9s 拨弦 %.1f 定音鼓 %.1f 力度 %.2f"
               % (i, SEG_BOUNDS[i], SEG_BOUNDS[i + 1], row, s[2] or "无", s[4], s[5], s[8]))
-    for bar_i in range(nbars):
+    for bi in range(nbars):
+        bar_i = bar_first + bi
         t0 = bar_i * BAR
         root, tones, ci = CHORDS[bar_i % 4]
         (s_str, s_harp, lead, cnt, s_pizz, s_timp, s_choir, oct_shift, dyn) = section_of(bar_i)
@@ -301,8 +432,8 @@ def main():
             # 打击只有 0.125, 持续层盖住拍点, 拍上/拍间能量比只有 1.14; 压到 0.12 后回升
             for k, semi in enumerate(tones):
                 f = hz(semi - 12 + (12 if k == 0 else 0))
-                add(strings_b, strings(f, BAR + 0.8, 0.12 * s_str * dyn), t0)
-            add(strings_b, strings(hz(tones[0] + 12), BAR + 0.8, 0.07 * s_str * dyn), t0)
+                add(strings_b, strings(f, BAR + 0.8, 0.12 * s_str * dyn), t0 - seg_a)
+            add(strings_b, strings(hz(tones[0] + 12), BAR + 0.8, 0.07 * s_str * dyn), t0 - seg_a)
 
         if s_harp > 0:
             pat = ARP[(bar_i // 4) % len(ARP)]
@@ -311,7 +442,7 @@ def main():
                 semi = tones[idx % len(tones)] + (12 if idx >= len(tones) else 0) + (12 if k >= 4 else 0)
                 # 拍间那一格量的是反拍八分音符, 它与拍上的电平差决定拍点峰值比
                 amp = 0.22 if k % 2 == 0 else 0.04
-                add(harp_b, harp(hz(semi), 0.9, amp * s_harp * dyn), t0 + k * BEAT * 0.5)
+                add(harp_b, harp(hz(semi), 0.9, amp * s_harp * dyn), t0 + k * BEAT * 0.5 - seg_a)
 
         if lead:
             ph = (bar_i // 4) % len(PHRASE_PLAN)
@@ -322,14 +453,14 @@ def main():
                     continue
                 f = hz(deg(d) + oct_shift)
                 voice = {"flute": flute, "clarinet": clarinet, "horn": horn}[lead]
-                add(lead_b, voice(f, dur * BEAT + 0.35, 0.17 * dyn), t0 + beat * BEAT)
+                add(lead_b, voice(f, dur * BEAT + 0.35, 0.17 * dyn), t0 + beat * BEAT - seg_a)
 
         if cnt and bar_i % 2 == 0:
             # 对位必须稀疏. 每小节都奏长音会变成连续声墙, 把拍点整个掩掉
             for k, semi in enumerate(tones[1:]):
                 voice = {"flute": flute, "horn": horn, "clarinet": clarinet}[cnt]
                 f = hz(semi - 12 + (12 if k else 0))
-                add(cnt_b, voice(f, 1.6 * BEAT, 0.09 * dyn), t0 + k * 2 * BEAT)
+                add(cnt_b, voice(f, 1.6 * BEAT, 0.09 * dyn), t0 + k * 2 * BEAT - seg_a)
 
         if s_pizz > 0:
             # 四个拍点都落拨弦, 1 与 3 拍加重, 这是全片节奏的地基
@@ -338,33 +469,37 @@ def main():
                 # 低音不要沉到 A1, 小喇叭听不到拍点. 拨弦落在 110 到 220Hz 区间最稳
                 semi = root - 12 if k in (0, 2) else root
                 # 衰减 0.40 秒时, 尾巴会一直盖到拍间量测窗 (拍后 0.3 秒), 拍点峰值比被拉低
-                add(low_b, pizz(hz(semi), 0.32, amp * s_pizz * dyn), t0 + beat * BEAT)
+                add(low_b, pizz(hz(semi), 0.32, amp * s_pizz * dyn), t0 + beat * BEAT - seg_a)
             # 弦乐断奏固定音型铺八分音符, 拍上重音
             for k in range(8):
                 semi = tones[0] if k % 2 == 0 else tones[2]
                 amp = 0.55 if k % 2 == 0 else 0.10
-                add(low_b, stacc(hz(semi - 12), 0.22, amp * s_pizz * dyn), t0 + k * BEAT * 0.5)
+                add(low_b, stacc(hz(semi - 12), 0.22, amp * s_pizz * dyn), t0 + k * BEAT * 0.5 - seg_a)
 
         if s_timp > 0:
-            add(perc_b, timpani(hz(root - 12), 1.7, 0.70 * s_timp * dyn), t0)
+            add(perc_b, timpani(hz(root - 12), 1.7, 0.70 * s_timp * dyn), t0 - seg_a)
 
         if s_choir > 0:
             for semi in tones:
-                add(air_b, choir(hz(semi), BAR + 1.6, 0.09 * s_choir * dyn), t0)
+                add(air_b, choir(hz(semi), BAR + 1.6, 0.09 * s_choir * dyn), t0 - seg_a)
 
     # 滚镲渐强: 每个切点前铺 2 秒, 让转场有呼吸
     for cu in CUTS:
-        if cu > 2.0:
-            add(perc_b, cymbal_swell(2.0, 0.20), cu - 2.0)
+        if cu > 2.0 and seg_a < cu <= seg_b:
+            add(perc_b, cymbal_swell(2.0, 0.20), cu - 2.0 - seg_a)
 
-    # 力度弧线: 每个切点前 2.4 秒渐强, 切点后回落, 制造呼吸
-    dyn_env = np.ones(N)
+    # 力度弧线: 每个切点前 2.4 秒渐强, 切点后回落, 制造呼吸 (全程用绝对秒, 再平移到段内)
+    # 切点在本段之前时弧线整体不可见 (i1 被 min 夹到 0), 此时必须整条跳过,
+    # 否则 i1 等于 i2 而 i2 窗口还在, linspace 长度对不上会广播报错
+    dyn_env = np.ones(seg_n)
     for cu in CUTS:
-        i0 = max(0, int((cu - 2.4) * SR))
-        i1 = min(N, int(cu * SR))
+        if cu <= seg_a or cu > seg_b:
+            continue
+        i0 = max(0, int(round((max(cu - 2.4, seg_a) - seg_a) * SR)))
+        i1 = min(seg_n, int(round((cu - seg_a) * SR)))
         if i1 > i0:
             dyn_env[i0:i1] *= np.linspace(0.86, 1.0, i1 - i0)
-        i2 = min(N, i1 + int(0.9 * SR))
+        i2 = min(seg_n, i1 + int(0.9 * SR))
         if i2 > i1:
             dyn_env[i1:i2] *= np.linspace(0.88, 1.0, i2 - i1)
     for bus in (strings_b, harp_b, lead_b, cnt_b, low_b, perc_b, air_b):
@@ -372,7 +507,7 @@ def main():
 
     # 空气层: 极低电平的宽带噪声, 模拟演奏厅的空气与弓弦摩擦, 让弦乐不闷
     # 电平直接决定谱心: 持续层压低之后谱心会掉到 300Hz 以下, 这一层是把它抬回窗口的手段
-    air_noise = bp_fft(rng.standard_normal(N), 1800, 9000, 2) * 0.014 * dyn_env
+    air_noise = bp_fft(rng.standard_normal(seg_n), 1800, 9000, 2) * 0.014 * dyn_env
 
     if os.environ.get("ORCH_DEBUG"):
         for nm, b in (("strings", strings_b), ("harp", harp_b), ("lead", lead_b),
@@ -412,15 +547,15 @@ def main():
     # 时间常数必须远大于打击瞬态, 否则压缩器会把拍点压平, 卡点全毁
     st = bus_compress(st, thr=0.22, power=0.50, tau=0.45)
     # 母带链内部顺序固定: 滤波 -> 软限幅 -> 淡入淡出 -> 归一化 -> 过采样真峰压制
-    # 淡入淡出不再写在这里, 由母带链统一负责, 顺序错了整首会偏轻
-    st, mrep = warm_master(st, dur=DUR, fade_in=1.0, fade_out=2.4, warm=0.42,
-                           cut1_amt=0.28, cut2_amt=0.22, lpf=6000, true_peak=-1.0)
-
-    path = os.path.join(OUT, OUTNAME)
-    shape = write_wav(path, st)
-    print("wrote", path, shape, "peak %.2f dBFS  true peak %.2f dBTP%s"
-          % (mrep["peak_db"], mrep["true_peak_db"],
-             "" if mrep["true_peak_ok"] else "  [真峰未压住]"))
+    # 淡入淡出不再写在这里, 由母带链统一负责, 顺序错了整首会偏轻;
+    # 分段时淡入淡出只允许发生在整条片的首段与末段, 由 seg_a/seg_b 控制
+    fade_in = 1.0 if seg_a <= 0.0 else 0.0
+    fade_out = 2.4 if seg_b >= DUR - 1e-6 else 0.0
+    st, mrep = warm_master(st, dur=seg_b - seg_a, fade_in=fade_in, fade_out=fade_out,
+                           warm=0.42, cut1_amt=0.28, cut2_amt=0.22, lpf=6000,
+                           true_peak=-1.0)
+    _LAST_REPORT.update(mrep)
+    return st
 
 
 if __name__ == "__main__":

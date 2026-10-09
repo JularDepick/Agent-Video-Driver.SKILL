@@ -10,6 +10,9 @@
   python scripts/assemble_core.py --state scripts\\assemble_state.json --redo 7 --yes
   python scripts/assemble_core.py --probe-only          只探测并打印确认门, 不编码
 
+编码完成后质检实测值 (真峰, 集成响度, PSNR) 会写进状态文件; 视频流 _video_only.mp4
+只在质检时存在, 之后想单独复测 PSNR 用 scripts/psnr_check.py 对成片量.
+
 配套的前端是 scripts/assemble_progress.py, 它只读状态文件画进度, 不启停本脚本.
 
 三条硬约束 (都是实测踩过的坑):
@@ -41,6 +44,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_NAME = "assemble_state.json"
 STATE_VERSION = 1
+# 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
+FRAME_PATTERN = "n%05d.png"
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -77,6 +82,12 @@ def count_frames(frames):
         if name.startswith("n") and name.endswith(".png") and name[1:-4].isdigit():
             n += 1
     return n
+
+
+def missing_frames(frames, total):
+    """返回 [0, total) 里缺掉的那个别帧号; 中间缺帧会让某一批编码中途失败"""
+    return [i for i in range(int(total))
+            if not os.path.exists(os.path.join(frames, FRAME_PATTERN % i))]
 
 
 def plan_batches(total, n):
@@ -310,12 +321,29 @@ def measure_lufs(path):
     return float(hits[-1]) if hits else None
 
 
+def measure_true_peak_on_text(out):
+    """从已捕获的 ebur128 摘要文本里解析真峰, 供测试直接喂文本"""
+    m = re.search(r"^\s*True peak:(.*)$", out, re.M)
+    if m is None:
+        return None
+    hit = re.search(r"(-?\d+(?:\.\d+)?)\s*dBFS", m.group(1))
+    if hit:
+        return float(hit.group(1))
+    nxt = re.search(r"^\s*Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", out[m.end():], re.M)
+    return float(nxt.group(1)) if nxt else None
+
+
 def measure_true_peak(path):
-    """真峰必须从成片解码回来量: AAC 重建波形的采样间峰值可以超过原采样点"""
+    """
+    真峰必须从成片解码回来量: AAC 重建波形的采样间峰值可以超过原采样点
+
+    ebur128 摘要的行格式随 ffmpeg 版本不同: 有的版本数值直接跟在 True peak: 后面,
+    有的版本 (本机实测) True peak: 是单独的标题行, 数值在下一行的 Peak: 上.
+    两种都解析, 都解析不到才返回 None, 不要让真峰验收静默失效
+    """
     code, out = run([FFMPEG, "-hide_banner", "-nostats", "-i", path,
                      "-map", "0:a", "-af", "ebur128=peak=true", "-f", "null", "-"])
-    hits = re.findall(r"^\s*True peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", out, re.M)
-    return float(hits[-1]) if hits else None
+    return measure_true_peak_on_text(out)
 
 
 def mix_and_normalize(cfg, lim, state, state_path):
@@ -377,7 +405,7 @@ def build_config(a, total):
     frames = a.frames
     return {
         "frames": frames,
-        "pattern": os.path.join(frames, "n%05d.png"),
+        "pattern": os.path.join(frames, FRAME_PATTERN),
         "audio": a.audio,
         "out": out,
         "seg_dir": os.path.abspath(seg_dir),
@@ -477,6 +505,14 @@ def main(argv=None):
     os.makedirs(os.path.dirname(cfg["out"]) or ".", exist_ok=True)
     os.makedirs(cfg["seg_dir"], exist_ok=True)
 
+    miss = missing_frames(a.frames, total)
+    if miss:
+        head = ", ".join(str(x) for x in miss[:8])
+        more = "" if len(miss) <= 8 else " 等 %d 处" % len(miss)
+        print("错误: 帧目录缺帧, 数到 %d 张但帧号 [0, %d) 有空洞: %s%s" % (total, total, head, more))
+        print("  中间缺帧会让对应批次编码中途失败; 补渲缺的帧, 或把完整帧目录放回来")
+        return 2
+
     report, _ = probe_limits(cfg)
     lim = resolve_limits(cfg, report)
 
@@ -487,6 +523,16 @@ def main(argv=None):
         print("状态文件与本次配置不一致, 不能直接续跑: %s" % state_path)
         print("  要么把参数改回上次的值, 要么加 --restart 全部重来")
         return 7
+    if state is not None:
+        # 批次表自洽检查: 批次表是启动时按当时帧数算出的, 帧目录后来补齐或变动过的话
+        # 旧表就与实际帧数对不上, 继续编会报"找不到序列"; 有差额就打印两个数字并要求重启
+        planned = sum(b["end"] - b["start"] for b in state["batches"])
+        if planned != cfg["total_frames"]:
+            print("批次表与实际帧数不一致, 不能直接续跑: %s" % state_path)
+            print("  批次表按 %d 帧算出, 帧目录现在是 %d 帧, 差 %+d 帧"
+                  % (planned, cfg["total_frames"], cfg["total_frames"] - planned))
+            print("  加 --restart 重算批次表; 只想重编某几批先 --restart 再 --redo")
+            return 7
     fresh = state is None
     if fresh:
         state = new_state(cfg)
@@ -636,6 +682,7 @@ def main(argv=None):
 
         peak_failed = False
         tp = measure_true_peak(cfg["out"])
+        state["true_peak"] = tp
         if tp is None:
             print("警告: 成片里没有量到 True peak 行, 真峰未能核对")
         elif tp > cfg["true_peak_ceiling"]:
@@ -647,18 +694,28 @@ def main(argv=None):
             print("真峰合格: 实测 %s dBFS, 判据是不高于 %s dBFS"
                   % (tp, cfg["true_peak_ceiling"]))
         lufs = measure_lufs(cfg["out"])
+        state["lufs_measured"] = lufs
         if lufs is not None:
             print("集成响度: %s LUFS (目标 %s)" % (lufs, cfg["lufs"]))
 
         if not cfg["skip_quality_check"]:
             print("[质检] 编码前后 PSNR (高于 45dB 为视觉无损)")
             v = psnr_against_frames(cfg)
+            state["psnr"] = v
             if v is None:
                 print("警告: 没量到 PSNR, 质检未完成")
             else:
                 print("  average %.2f dB" % v)
                 print("  提醒: 源帧改过而没重编对应批次时, 这里的均值会假性掉下来; "
                       "该批必须用 --redo 重编")
+        write_state(state_path, state)
+        print("质检实测值 (真峰, 响度, PSNR) 已写进状态文件: %s" % state_path)
+        if cfg["video_only"] and os.path.exists(cfg["video_only"]):
+            print("提醒: 视频流会在本步末尾删除; 之后想复测 PSNR 用 "
+                  "python scripts/psnr_check.py --frames <帧目录> --video <成片>")
+        else:
+            print("提醒: 视频流已不在, 想复测 PSNR 用 "
+                  "python scripts/psnr_check.py --frames <帧目录> --video <成片>")
 
         if os.path.exists(cfg["video_only"]):
             os.remove(cfg["video_only"])

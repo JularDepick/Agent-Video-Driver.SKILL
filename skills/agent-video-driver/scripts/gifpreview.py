@@ -20,13 +20,15 @@ import sys
 from PIL import Image
 
 MAX_FRAMES = 120
+# 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
+FRAME_PATTERN = "n%05d.png"
 
 
 def frame_paths(frames, frm, to, every):
     out = []
     i = frm
     while i <= to:
-        p = os.path.join(frames, "n%05d.png" % i)
+        p = os.path.join(frames, FRAME_PATTERN % i)
         if os.path.exists(p):
             out.append((i, p))
         i += max(1, every)

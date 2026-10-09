@@ -39,6 +39,13 @@ CUTS = []
 OX, OY = 960.0, 540.0
 U = 100.0
 FRAMES = os.path.join("temp", "frames")
+# 帧文件命名的唯一来源: 外部脚本 (编码, 验收, 抽帧) 一律引用它, 不要各写一份字面量
+FRAME_PATTERN = "n%05d.png"
+
+
+def frame_path(i):
+    """第 i 帧的落盘路径: FRAMES 目录加 FRAME_PATTERN, 外部脚本统一用它"""
+    return os.path.join(FRAMES, FRAME_PATTERN % i)
 
 FONT_PATH = {
     "cnb": r"C:\Windows\Fonts\msyhbd.ttc",
@@ -1171,7 +1178,7 @@ def render_frame(scene_pick, t, cam=None):
 
 def render_range(scene_pick, a, b, cam=None, quiet=False):
     """
-    渲染帧区间 [a, b) 到 FRAMES/n%05d.png
+    渲染帧区间 [a, b) 到 FRAMES/FRAME_PATTERN
     分区间并行时把区间拆成多段分别调用, 每个进程写自己那段, 避免共享队列
     cam 的取值与 render_frame 一致: 标量或相机函数都行
 
@@ -1186,7 +1193,7 @@ def render_range(scene_pick, a, b, cam=None, quiet=False):
     t0 = time.time()
     for k, i in enumerate(range(a, b)):
         img = render_frame(scene_pick, i / FPS, cam)
-        img.save(os.path.join(FRAMES, "n%05d.png" % i), compress_level=3)
+        img.save(frame_path(i), compress_level=3)
         if not quiet and k % 60 == 0:
             el = time.time() - t0
             print("frame %d  %d/%d  %.2fs/frame  eta %.0fs"

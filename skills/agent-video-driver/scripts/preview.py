@@ -6,6 +6,7 @@
   python scripts/preview.py temp/frames/n001200.png            # 一张或多张图片, 行为不变
   python scripts/preview.py --around temp/frames 1200 3        # 第 1200 帧前后各 3 帧
   python scripts/preview.py --ink temp/frames/n001200.png      # 亮场: 按块内最暗像素取色
+  python scripts/preview.py --edge temp/frames/n001200.png     # 线稿: 先做梯度再映射字符
 
 --around 打印帧目录下 n%05d.png 中 指定帧 前后各 半径 帧的字符图, 每张前面一行给
 帧路径, 平均亮度 与 与前一帧的平均绝对差, 末了报出相邻帧差分的峰值落在第几帧.
@@ -15,6 +16,10 @@
 缺省取块内最亮像素, 只适用于暗场. 白底深字的亮场必须加 --ink: 亮场里每一块的最亮像素
 都是背景, 缺省模式会把整屏糊成一片背景色, 看不出文字与元素位置. --ink 取块内最暗像素
 当墨色, 并按墨量给字符浓淡.
+
+细线稿风格 (蓝图, 工程图, 1 到 3px 线条) 用上面两种模式都看不清线: 一条 2px 的线被
+20x23px 的字符块稀释后, 亮暗差掉到取色阈值之下. --edge 先对灰度做梯度 (幅值), 梯度
+把线从背景里提出来, 再按块内最大梯度取色分类, 框线, 尺寸标注与箭头才能在字符图里显形.
 """
 import argparse
 import os
@@ -74,12 +79,44 @@ def classify_ink(px):
     return "."
 
 
-def preview(path, cw=CW, ch=CH, ink=False):
+def classify_edge(px, mag):
+    """
+    线稿模式用: 代表像素是块内梯度最大处, 按色相给字母, 按梯度强度给浓淡
+
+    mag 是该块的梯度幅值: 线条中心通常上百, 背景多在个位数, 阈值按这个量级分档
+    """
+    base = classify(px)
+    if base == " ":
+        # 代表像素本身落在暗线上时 classify 会给空; 梯度大说明块内确实有线, 用亮字符兜底
+        return "#" if mag > 60.0 else ("+" if mag > 24.0 else " ")
+    return base
+
+
+def preview(path, cw=CW, ch=CH, ink=False, edge=False):
     im = Image.open(path).convert("RGB")
     a = np.asarray(im).astype(np.float32)
     h, w, _ = a.shape
     bh, bw = h // ch, w // cw
     a = a[:bh * ch, :bw * cw]
+    if edge:
+        # 线稿模式: 灰度先求梯度幅值 (线上大, 背景小), 每块取梯度最大的像素做分类.
+        # 每帧一次双循环, 不在渲染热路径上, 一次核对的代价可忽略
+        gl = 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+        gx = np.zeros_like(gl)
+        gy = np.zeros_like(gl)
+        gx[:, 1:-1] = gl[:, 2:] - gl[:, :-2]
+        gy[1:-1, :] = gl[2:, :] - gl[:-2, :]
+        mag = np.sqrt(gx * gx + gy * gy)
+        lines = []
+        for y in range(ch):
+            row = []
+            for x in range(cw):
+                sub = mag[y * bh:(y + 1) * bh, x * bw:(x + 1) * bw]
+                iy, ix = np.unravel_index(int(sub.argmax()), sub.shape)
+                row.append(classify_edge(a[y * bh + iy, x * bw + ix],
+                                         float(sub.max())))
+            lines.append("".join(row))
+        return NL.join(lines), float(mag.mean())
     blocks = a.reshape(ch, bh, cw, bw, 3)
     lum = (0.299 * blocks[..., 0] + 0.587 * blocks[..., 1] + 0.114 * blocks[..., 2])
     flat = blocks.reshape(ch, bh, cw, bw, 3)
@@ -129,8 +166,12 @@ def mae(a, b):
     return float(np.abs(a[:h, :w] - b[:h, :w]).mean())
 
 
+# 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
+FRAME_PATTERN = "n%05d.png"
+
+
 def frame_path(frames, i):
-    return os.path.join(frames, "n%05d.png" % i)
+    return os.path.join(frames, FRAME_PATTERN % i)
 
 
 def around(frames, idx, radius=3, ink=False):
@@ -179,6 +220,8 @@ def main(argv=None):
                     help="打印指定帧前后各若干帧的字符图与相邻帧差分, 半径缺省 3")
     ap.add_argument("--ink", action="store_true",
                     help="亮场模式: 按块内最暗像素取色, 底色留空; 白底深字的画面必须加它")
+    ap.add_argument("--edge", action="store_true",
+                    help="线稿模式: 按块内梯度最大的像素取色, 蓝图工程图这类细线风格用它")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if a.around:
         if len(a.around) not in (2, 3):
@@ -209,10 +252,10 @@ def main(argv=None):
             continue
         s = stats(p)
         print("=" * 100)
-        print(p, "mean=%.1f p99=%.0f bright=%.3f dark=%.3f%s"
+        print(p, "mean=%.1f p99=%.0f bright=%.3f dark=%.3f%s%s"
               % (s["mean"], s["p99"], s["bright_frac"], s["dark_frac"],
-                 "  ink" if a.ink else ""))
-        txt, _ = preview(p, ink=a.ink)
+                 "  ink" if a.ink else "", "  edge" if a.edge else ""))
+        txt, _ = preview(p, ink=a.ink, edge=a.edge)
         print(txt)
     return 2 if missing else 0
 

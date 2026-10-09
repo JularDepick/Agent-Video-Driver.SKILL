@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 亮度标定: 对着参考片量均值, 中位数与 p95, 判断底色深浅与字幕亮度是否对得上
+支持一次传多个输入 (逐屏终检时把整段帧逐张传进来), 并可把结果写成一张 markdown 表
 
 编码与调色的头号问题是整体亮了 2 到 3 倍还看不出来, 显示器会骗人. 所以判据不是"看着差不多",
 而是与参考片在相同位置量出来的三个数比.
@@ -9,6 +10,8 @@
   python scripts/brightness.py out/成片.mp4 --at 20 --ref 参考片.mp4 --ref-at 20
   python scripts/brightness.py temp/frames_proj/n001200.png
   python scripts/brightness.py out/成片.mp4 --json temp/brightness.json
+  python scripts/brightness.py temp/qa/screen01.png temp/qa/screen02.png --md temp/qa/brightness.md
+  python scripts/brightness.py --at 12.5 temp/frames_proj/n00375.png --md temp/bright.md
 
 判据:
   中位数决定底色深浅, 暗场片常在 5 到 30 之间
@@ -109,84 +112,113 @@ def judge(ms, ref):
     return notes
 
 
+def write_md(path, groups):
+    """
+    把量测结果写成一张 markdown 表
+
+    groups 是 [(输入路径, [rows], [notes]), ...]; 提示正文只留在 stdout,
+    表里的提示列只标该输入有没有判据提示, 避免表格里塞长句
+    """
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    lines = ["| 输入 | 时刻s | 均值 | 中位数 | p95 | p99 | 暗部 | 亮部 | 提示 |",
+             "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|"]
+    for label, rows, notes in groups:
+        tip = "有 %d 条, 见输出" % len(notes) if notes else "-"
+        for t, m in rows:
+            lines.append("| %s | %s | %.2f | %.2f | %.1f | %.2f | %.4f | %.4f | %s |"
+                         % (label, "-" if t is None else "%.2f" % t,
+                            m["mean"], m["median"], m["p95"], m["p99"],
+                            m["dark_frac"], m["bright_frac"], tip))
+    with open(path, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines) + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description="亮度标定: 量均值, 中位数与 p95, 可与参考片对比")
-    ap.add_argument("input", help="成片, 视频片段或单张帧图")
+    ap.add_argument("inputs", nargs="+", help="成片, 视频片段或帧图, 可给多个 (逐屏表就逐张传)")
     ap.add_argument("--at", type=float, nargs="+", default=None,
                     help="抽帧时刻秒数, 可给多个; 缺省取片长的 1/4 与 3/4 两处")
-    ap.add_argument("--ref", default=None, help="参考片或参考帧图, 用于对比")
+    ap.add_argument("--ref", default=None, help="参考片或参考帧图, 只与最后一个输入对比")
     ap.add_argument("--ref-at", dest="ref_at", type=float, nargs="+", default=None,
                     help="参考片的抽帧时刻, 缺省与 --at 相同")
     ap.add_argument("--json", dest="json_path", default=None, help="把结果写成 JSON 的路径")
+    ap.add_argument("--md", dest="md_path", default=None,
+                    help="把结果写成 markdown 表的路径, 逐屏终检用")
     a = ap.parse_args()
 
-    if not os.path.exists(a.input):
-        print("找不到文件: %s" % a.input)
-        return 2
+    for p in a.inputs:
+        if not os.path.exists(p):
+            print("找不到文件: %s" % p)
+            return 2
     if a.ref and not os.path.exists(a.ref):
         print("找不到参考文件: %s" % a.ref)
         return 2
 
     times = a.at
     if times is None:
-        if is_video(a.input):
+        if any(is_video(p) for p in a.inputs):
             times = [10.0, 30.0]
         else:
             times = [0.0]
     ref_times = a.ref_at if a.ref_at else times
 
     try:
-        rows = analyse(a.input, times)
-        ref_rows = analyse(a.ref, ref_times) if a.ref else None
+        groups = []
+        for idx, src in enumerate(a.inputs):
+            rows = analyse(src, times)
+            ref_rows = analyse(a.ref, ref_times) if (a.ref and idx == len(a.inputs) - 1) else None
+            notes = []
+            for i, (t, m) in enumerate(rows):
+                ref = None
+                if ref_rows:
+                    ref = ref_rows[i][1] if i < len(ref_rows) else ref_rows[-1][1]
+                got = judge(m, ref)
+                if got:
+                    notes.append((t, got))
+            groups.append((src, rows, notes))
     except Exception as e:
         print("量测失败: %s" % e)
         return 2
 
     print("=" * 66)
-    print("亮度标定 %s" % a.input)
+    print("亮度标定: %d 个输入" % len(a.inputs))
     print("=" * 66)
-    print("%-10s %8s %8s %8s %8s %8s %8s" % ("时刻(s)", "均值", "中位数", "p95", "p99", "暗部", "亮部"))
-    for t, m in rows:
-        print("%-10s %8.2f %8.2f %8.2f %8.2f %8.4f %8.4f"
-              % ("-" if t is None else "%.2f" % t, m["mean"], m["median"], m["p95"],
-                 m["p99"], m["dark_frac"], m["bright_frac"]))
-    print("中位数 RGB: " + "   ".join(
-        "%s -> %s" % ("-" if t is None else "%.1fs" % t, m["median_rgb"]) for t, m in rows))
-
-    if ref_rows:
-        print("-" * 66)
-        print("参考 %s" % a.ref)
-        print("%-10s %8s %8s %8s %8s %8s %8s" % ("时刻(s)", "均值", "中位数", "p95", "p99", "暗部", "亮部"))
-        for t, m in ref_rows:
+    any_note = False
+    for src, rows, notes in groups:
+        print("")
+        print("[%s]" % src)
+        print("%-10s %8s %8s %8s %8s %8s %8s"
+              % ("时刻(s)", "均值", "中位数", "p95", "p99", "暗部", "亮部"))
+        for t, m in rows:
             print("%-10s %8.2f %8.2f %8.2f %8.2f %8.4f %8.4f"
                   % ("-" if t is None else "%.2f" % t, m["mean"], m["median"], m["p95"],
                      m["p99"], m["dark_frac"], m["bright_frac"]))
-
-    print("-" * 66)
-    any_note = False
-    for i, (t, m) in enumerate(rows):
-        ref = None
-        if ref_rows:
-            ref = ref_rows[i][1] if i < len(ref_rows) else ref_rows[-1][1]
-        notes = judge(m, ref)
+        print("中位数 RGB: " + "   ".join(
+            "%s -> %s" % ("-" if t is None else "%.1fs" % t, m["median_rgb"]) for t, m in rows))
         if notes:
             any_note = True
-            print("时刻 %s:" % ("-" if t is None else "%.2f" % t))
-            for x in notes:
-                print("  - %s" % x)
+            for t, got in notes:
+                print("时刻 %s:" % ("-" if t is None else "%.2f" % t))
+                for x in got:
+                    print("  - %s" % x)
     if not any_note:
+        print("")
         print("判据全部通过: 底色与字幕亮度都落在区间内")
 
     if a.json_path:
         parent = os.path.dirname(os.path.abspath(a.json_path))
         os.makedirs(parent, exist_ok=True)
         with open(a.json_path, "w", encoding="utf-8") as fp:
-            json.dump({"input": a.input,
-                       "rows": [{"t": t, **m} for t, m in rows],
-                       "ref": None if not ref_rows else
-                       {"file": a.ref, "rows": [{"t": t, **m} for t, m in ref_rows]}},
-                      fp, ensure_ascii=False, indent=2)
+            json.dump({"inputs": a.inputs,
+                       "groups": [{"input": src,
+                                   "rows": [{"t": t, **m} for t, m in rows]}
+                                  for src, rows, _ in groups],
+                       "ref": a.ref}, fp, ensure_ascii=False, indent=2)
         print("wrote %s" % a.json_path)
+    if a.md_path:
+        write_md(a.md_path, groups)
+        print("wrote %s" % a.md_path)
     return 0
 
 

@@ -71,11 +71,11 @@ python scripts/resources.py --for encode --frames <帧数>
 只探测不编码分别是 `-ProbeOnly` 与 `--probe-only`. 探测判定空间不足或负载过高时, 脚本会拒绝开工 (退出 4), 要强行开工必须显式加 `-Force` / `--force`.
 长片用 `assemble_core.py` 的分批路线: 它每完成一批原子写状态 JSON, 重跑即从断点续跑, `--redo N` 只重编指定批次, 前端 `scripts/assemble_progress.py` 只读轮询状态画进度, 启停权始终在用户手里.
 
-## 二, 八阶段流程
+## 二, 九阶段流程
 
 ```
 0 探测环境 -> 1 简报与提示词 -> 2 内容与文案 -> 3 风格与分镜
-  -> 4 配乐先行 -> 5 分段渲染 -> 6 编码封装 -> 7 客观验收
+  -> 4 配乐先行 -> 5 分段渲染 -> 5.5 逐屏终检 -> 6 编码封装 -> 7 客观验收
 ```
 
 细节与每阶段的产出物见 `references/workflow.md`.
@@ -135,7 +135,7 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 | `scripts/check_env.py` | 探测 ffmpeg, Python 库, 字体, 磁盘, 沙箱限制, 渲染路线可用性 |
 | `scripts/new_project.py` | 起一个新工程: 建目录, 复制脚本成自包含副本, 生成四份骨架并写好顶部常量 |
 | `scripts/resources.py` | 重活前的资源探测与限额建议: 核数, 负载, 内存, 磁盘, 建议线程数与编码预设 |
-| `scripts/check_text.py` | 字形体检: 位图比对找出会变豆腐块的字符 |
+| `scripts/check_text.py` | 字形体检: 位图比对找出会变豆腐块的字符; `--from-plan` 读计划屏文字, `--from-source` 用 ast 抽场景模块字符串字面量 |
 | `scripts/beats.py` | 从音频反推 BPM, 拍点, 小节线, 逐小节响度变化 |
 | `scripts/loops.py` | 找音乐接缝: 比较各小节频谱, 列出可无缝重复或剪掉的小节区间 |
 | `scripts/cutmusic.py` | 按小节剪辑用户自备音乐, 接缝落在精确的小节线上 |
@@ -147,17 +147,21 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 | `scripts/styles.py` | 风格牌堆数据: 17 张牌的惯用手法, 底板, 字体, 配乐与注意事项 |
 | `scripts/style_lottery.py` | 抽一张风格牌, 可复现, 可排除, 可落成项目里的 STYLE.md |
 | `scripts/dsp.py` | 共享 DSP 基元: 滤波, 混响, 总线压缩, 暖调母带, 写 WAV |
-| `scripts/orchestra.py` | 管弦乐配乐引擎 (默认推荐) |
+| `scripts/psnr_check.py` | PSNR 复测: 固定输入顺序与参照物口径, 对视频流或成片随时复量, 帧空洞先拦截 |
+| `scripts/orchestra.py` | 管弦乐配乐引擎 (默认推荐), 支持 `--sr` 降采样与 `--chunk` 分段写盘 |
 | `scripts/music.py` | 键盘与电子配乐引擎 (备选) |
 | `scripts/sfx.py` | 音效轨混音: 按 cue 表把用户自备音效混成一条轨 |
 | `scripts/check_audio.py` | 配乐客观检查: 卡点, 频段, 脉冲, 单调性一次跑完 |
-| `scripts/preview.py` | 无视觉能力下的画面验收: 把帧降采样成彩色字符图, 支持前后帧对比; 亮场加 `--ink` 按最暗像素取色 |
+| `scripts/preview.py` | 无视觉能力下的画面验收: 把帧降采样成彩色字符图, 支持前后帧对比; 亮场加 `--ink` 按最暗像素取色, 细线稿风格加 `--edge` 按梯度取色 |
 | `scripts/gifpreview.py` | 从帧序列抽帧存成 GIF, 用来看运动, 供用户过风格确认 |
-| `scripts/brightness.py` | 亮度标定: 量均值, 中位数与 p95, 可与参考片同位置对比 |
-| `scripts/qa.py` | 按 plan.json 逐屏抽帧, 锚点前后帧对比, 拼总览图 |
+| `scripts/render_parallel.py` | 并行渲染包装器: 按建议进程数起独立子进程各渲各的帧区间, 轮询汇总进度 |
+| `scripts/fonts.py` | 字体探测: 跨平台找中文字体与等宽字体, 生成 FONT_PATH 片段, 支持环境变量目录与 fc-list |
+| `scripts/check_redaction.py` | 去敏反查: 从原始产物自动推导禁用词, 对交付目录全文反查, 命中只报形态与位置 |
+| `scripts/brightness.py` | 亮度标定: 量均值, 中位数与 p95, 支持一次多张输入与 markdown 落表, 可与参考片同位置对比 |
+| `scripts/qa.py` | 按 plan.json 逐屏抽帧与总览: 输入给成片做编码后验收, 给帧目录做编码前逐屏终检; 逐屏表带幕号与 p95 |
 | `scripts/tokens.py` | 统计本会话 token 与成本, 供片尾字幕使用 |
 | `scripts/assemble.ps1` | 编码, 混音, 响度归一, 从成片解码回来量真峰, 质检 |
-| `scripts/assemble_core.py` | 分批编码合成的后端: 切片编码, 无损拼接, 断点续跑, 进度原子写 JSON, `--redo` 重编指定批次 |
+| `scripts/assemble_core.py` | 分批编码合成的后端: 切片编码, 无损拼接, 断点续跑, 进度原子写 JSON, `--redo` 重编指定批次, 帧空洞与批次自检, 质检值写状态文件 |
 | `scripts/assemble_progress.py` | 分批合成的进度前端: 只读轮询状态文件画进度条与批次表, 不启停后端 |
 | `scripts/bench_encode.py` | 编码路线对比: 先量输入侧解码与滤镜开销, 再比各档编码器的耗时, 体积与 PSNR |
 | `templates/scene_module.py` | 场景模块骨架: 逐拍触发, 分段调度, 区间渲染 CLI |
@@ -177,7 +181,7 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 
 判定规则, 汇报格式与发布前清单见 `references/content-and-rights.md`.
 
-## 七, 二十二条工程铁律 (都是踩过的坑)
+## 七, 二十四条工程铁律 (都是踩过的坑)
 
 1. 先做配乐再做画面, 画面切点必须等于配乐切点, 不要反过来迁就画面
 2. 所有入场动画以拍为单位写死, 禁止用秒数近似, 卡点差一帧观众就能看出来
@@ -199,25 +203,30 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 18. 上屏的每个数字都要与代码实际值对账, 不要凭记忆写; 改帧率分辨率采样率之后要重新对一次
 19. 音轨用 AAC 384k, 真峰要从成片解码回来量; 256k 会把瞬态密集素材的解码真峰顶到 0 dBFS 以上
 20. 分批编码只切视频流, 音频整条一次处理; 切片用 `-start_number` 加 `-frames:v`, 不要用 `-vf select`, 后者每批都会把整段帧全解码一遍
-21. 源帧改过就必须重编受影响批次 (分批路线用 `--redo N`), 否则视频里是旧帧而磁盘上是新帧, PSNR 验收会假性崩掉
-22. 换编码路线有固定顺序: 先量 PSNR 定画质底线, 再分离解码与滤镜与编码三段开销, 最后才动 preset 与编码器; x264 是纯 CPU 编码器, CUDA 加速不了它, 换 NVENC 等于换编码器, 换完必须重量 PSNR
+22. 渲染进行中场景源码视为冻结, 必须改就先停渲染进程, 改完重渲受影响帧区间并对对应批次 `--redo`, 最后重测 PSNR 与响度
+23. 源帧改过就必须重编受影响批次 (分批路线用 `--redo N`), 动手前先确认改的帧落在哪个批次 (`scene_module.py screen N` 反查), 否则视频里是旧帧而磁盘上是新帧, PSNR 验收会假性崩掉
+24. 换编码路线有固定顺序: 先量 PSNR 定画质底线, 再分离解码与滤镜与编码三段开销, 最后才动 preset 与编码器; x264 是纯 CPU 编码器, CUDA 加速不了它, 换 NVENC 等于换编码器, 换完必须重量 PSNR
 
 完整坑表与复现条件见 `references/pitfalls.md`, 文本编码见 `references/text-and-encoding.md`.
 
 ## 八, 验收标准 (交付前必须全绿)
 
-| 项 | 判据 |
-|:---:|:---|
-| 时长 | 精确到帧, 30s 片必须 30.000s |
-| 卡点 | 逐帧差分峰值落在小节线正负 1 帧内, 且锚点屏的前后帧差异峰值落在切点帧 |
-| 响度 | 集成响度 -16 到 -14 LUFS, 真峰值不高于 -1.0 dBFS |
-| 画质 | 编码后与源帧 PSNR 高于 45dB |
-| 构图 | 每个段落至少抽 2 帧做字符图核对, 每屏至少 1 帧进总览图 |
-| 体积 | 1080p 每 30s 控制在 15MB 以内 (CRF 18 到 20) |
-| 字形 | 渲染期审计报告里没有"回退链也找不到字形"的项 |
-| 内容 | 上屏每一行文字都能在已核实的内容里找到出处 |
+判据本身不分先后, 但每一项都有它**该跑的窗口**: 编码前只有帧序列, 编码后才有成片, 在错误的窗口跑会量不出真实问题 (构图与逐屏亮度只能在编码前拦住旧画面, PSNR 与真峰只能在编码后量).
 
-方法见 `references/verification.md`.
+| 项 | 判据 | 窗口 | 方法 |
+|:---:|:---|:---:|:---|
+| 字形 | 渲染期审计报告里没有"回退链也找不到字形"的项 | 渲染期 | 审计报告, 渲染前用 `check_text.py` |
+| 构图 | 每个段落至少抽 2 帧做字符图核对, 每屏至少 1 帧进总览图 | 渲染期与逐屏终检 | `preview.py` 加 `qa.py` 帧序列模式 |
+| 逐屏亮度 | 逐屏表无空场 (平均亮度不低于 3) 与偏暗屏 (p95 不低于 120) | 逐屏终检, 编码前 | `qa.py` 帧序列模式, 补量用 `brightness.py --md` |
+| 异常屏定位 | 每个异常屏都反查过幕号与场景函数, 不凭幕号猜 | 逐屏终检 | `scene_module.py screen N` |
+| 时长 | 精确到帧, 30s 片必须 30.000s | 编码后 | `qa.py` 成片模式加 ffprobe |
+| 卡点 | 逐帧差分峰值落在小节线正负 1 帧内, 且锚点屏的前后帧差异峰值落在切点帧 | 编码后 | `qa.py --anchor` |
+| 画质 | 编码后与源帧 PSNR 高于 45dB | 编码后 | `psnr_check.py` |
+| 响度 | 集成响度 -16 到 -14 LUFS, 真峰值不高于 -1.0 dBFS | 编码后 | ebur128 量测 |
+| 体积 | 1080p 每 30s 控制在 15MB 以内 (CRF 18 到 20) | 编码后 | 文件属性 |
+| 内容 | 上屏每一行文字都能在已核实的内容里找到出处 | 交付前 | content-and-rights.md 的核查表 |
+
+方法与实测口径见 `references/verification.md`; 编码前的窗口划分见 `references/workflow.md` 的阶段 5.5.
 
 ## 九, 署名策略
 
@@ -231,18 +240,20 @@ python scripts/style_lottery.py --write <项目目录>  把牌面落成 STYLE.md
 |:---:|:---|:---|:---|
 | 1 | `references/workflow.md` | 八阶段流程, 每阶段产出物, 分段经验值 | 接到任务后第一份 |
 | 2 | `references/prompt-scaffolding.md` | 简报与阶段提示词的七模块, 角色分工, 子代理交接 | 开工写提示词时 |
-| 3 | `references/narrative.md` | 开场语法, 单屏字数与阅读速度, 叙事线索与节奏 | 写文案时 |
+| 3 | `references/narrative.md` | 开场语法, 单屏字数与阅读速度, 主句尺寸标尺, 叙事线索与节奏 | 写文案时 |
 | 4 | `references/content-and-rights.md` | 事实来源判定, 素材许可, 署名, 发布前清单 | 查资料与配图时 |
 | 5 | `references/styles.md` | 十种风格与配乐对应, 通用运动语法, 选风格的四条判断法 | 定风格时 |
 | 6 | `references/beat-sync.md` | 三层对齐, 段内四拍职责, 整场反白, 卡点验证 | 写分镜之前 |
-| 7 | `references/audio-engine.md` | 两套配乐引擎, 音色库, 编排骨架, 用户自备音乐, 客观判据 | 做配乐时 |
-| 8 | `references/visual-engine.md` | 画面引擎 API, 字号反解与字高对齐, 通用组件, 图形配方, 性能 | 写场景时 |
-| 9 | `references/three-d.md` | 3D 点云渲染, 相机与光照, 隐藏线刻版, 性能与三条坑 | 需要立体感时 |
-| 10 | `references/print-engine.md` | 印刷与 riso 路线: 纸底, 网点, 叠印, 套印, 逐帧管线的组织 | 做印刷风格时 |
-| 11 | `references/text-and-encoding.md` | 三层编码关与字形体检 | 写任何上屏文本前 |
-| 12 | `references/verification.md` | 各类验收手段与交付自检清单 | 交付前 |
-| 13 | `references/pitfalls.md` | 踩坑的现象, 原因与规避 | 出问题或复盘时 |
-| 14 | `references/conventions.md` | 目录, 命名, 代码, 文档, 协作规范 | 建项目结构时 |
+| 7 | `references/transitions.md` | 转场手法目录: 效果, 适用与实现要点, 选用纪律 | 写分镜选转场时 |
+| 8 | `references/audio-engine.md` | 两套配乐引擎, 音色库, 编排骨架, 用户自备音乐, 客观判据 | 做配乐时 |
+| 9 | `references/visual-engine.md` | 画面引擎 API, 字号反解与字高对齐, 通用组件, 图表配方, 性能 | 写场景时 |
+| 10 | `references/three-d.md` | 3D 点云渲染, 相机与光照, 隐藏线刻版, 性能与三条坑 | 需要立体感时 |
+| 11 | `references/print-engine.md` | 印刷与 riso 路线: 纸底, 网点, 叠印, 套印, 逐帧管线的组织 | 做印刷风格时 |
+| 12 | `references/text-and-encoding.md` | 三层编码关与字形体检 | 写任何上屏文本前 |
+| 13 | `references/verification.md` | 各类验收手段与交付自检清单 | 交付前 |
+| 14 | `references/desensitization.md` | 三层去敏, 禁用词表自动推导与反查, 命中处置 | 处理含个人信息素材时 |
+| 15 | `references/pitfalls.md` | 踩坑的现象, 原因与规避 | 出问题或复盘时 |
+| 16 | `references/conventions.md` | 目录, 命名, 代码, 文档, 协作规范 | 建项目结构时 |
 
 排序只由本表承担, 文件名不带序号.
 新增参考文档时在表里插一行即可, 不需要重命名任何既有文件.

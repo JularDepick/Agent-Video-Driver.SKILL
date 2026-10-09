@@ -142,6 +142,7 @@ def main(argv=None):
         return 0
 
     frames = a.frames
+    # 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
     pattern = os.path.join(frames, "n%05d.png")
     if not os.path.isdir(frames):
         print("找不到帧目录: %s" % frames)

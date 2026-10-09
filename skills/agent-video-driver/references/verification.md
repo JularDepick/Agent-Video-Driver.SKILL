@@ -106,6 +106,16 @@ ffmpeg -i temp\video_only.mp4 -vf "signalstats,metadata=print:key=lavfi.signalst
 
 ## 四, 画质 (PSNR)
 
+复测用独立脚本, 输入顺序与参照物口径已固定, 不要手写命令 (顺序或参照物写反, 均值会从 49dB 假跌到 17.5dB):
+
+```
+python scripts/psnr_check.py --frames temp/frames_proj --video temp/_video_only.mp4
+python scripts/psnr_check.py --frames temp/frames_proj --video out/成片.mp4
+python scripts/psnr_check.py --frames temp/frames_proj --video out/成片.mp4 --count 240
+```
+
+口径: 源帧在 `[0:v]`, 视频在 `[1:v]`; 最准的参照物是编码后的无损视频流 (分批路线的 `_video_only.mp4`), 对成片量只应比视频流口径低不到 0.5dB. 帧目录有空洞时脚本先拦截不量 (缺帧对齐错位, 均值没有意义), 视频流帧数与源帧差超过 1 帧时也会警告.
+
 ```powershell
 ffmpeg -framerate 30 -i temp\frames\n%05d.png -i temp\video_only.mp4 -lavfi "[0:v][1:v]psnr" -f null -
 ```

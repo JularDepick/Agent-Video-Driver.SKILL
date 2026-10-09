@@ -8,6 +8,7 @@
   python scene_module.py plan [进程数]         打印并行渲染的帧区间与逐区间命令
   python scene_module.py at <段号>:<拍号>      渲该拍的单帧全分辨率, 用于逐场审阅
   python scene_module.py stills <段号> [帧数]  该段等距抽若干帧拼一张长图
+  python scene_module.py screen <屏号>         屏号反查幕号与场景函数, 不给屏号打全表
 
 plan 不给进程数时取 scripts/resources.py 的建议, 导入不到就退回内置规则
 每个区间要用独立的进程各跑各的, 不要用共享队列 (沙箱会拦命名管道)
@@ -392,9 +393,81 @@ def stills(k, n=7, width=480):
     return 0
 
 
+def screen_rows():
+    """
+    全局屏表: 从第 1 幕第 1 屏起跨幕连续编号, 每项含幕号, 幕内序, 起止秒与场景函数名
+    屏起点来自 plan.json 或 SCREEN_COUNT 等分, 与 sub(t) 用的是同一份来源
+    """
+    rows = []
+    n = 0
+    for k in range(len(SEG_OF) - 1):
+        ts = screen_starts(k)
+        sp = seg_span(k)
+        act_end = sp[1] if sp else cv.DUR
+        fn = SCENES[k].__name__ if k < len(SCENES) else "?"
+        for i, t in enumerate(ts):
+            n += 1
+            end = ts[i + 1] if i + 1 < len(ts) else act_end
+            rows.append({"n": n, "act": k, "sub": i, "scene": fn,
+                         "t0": t, "t1": end})
+    return rows
+
+
+def _plan_screen_texts():
+    """从 plan.json 读每幕每屏的上屏文字; 读不到返回 None"""
+    if not os.path.exists(PLAN):
+        return None
+    try:
+        with open(PLAN, encoding="utf-8") as f:
+            p = json.load(f)
+    except (OSError, ValueError):
+        return None
+    out = []
+    for sc in p.get("scenes", []):
+        texts = []
+        for s in (sc.get("screens") or []):
+            texts.append(str(s.get("text", "") or ""))
+        out.append(texts)
+    return out or None
+
+
+def print_screen(n=None):
+    """
+    屏号反查: 回答 第 N 屏属于哪一幕的哪一屏, 对应哪个场景函数
+
+    全局屏号与幕号不是线性对应 (幕内屏数不均), 凭幕号往回推屏号是返工根源;
+    改任何一屏之前先跑这条命令确认位置, 不要从验收表行号猜幕号
+    """
+    rows = screen_rows()
+    texts = _plan_screen_texts()
+    if n is not None and not (1 <= n <= len(rows)):
+        print("屏号越界: %s, 可用范围是 1 到 %d" % (n, len(rows)))
+        return 2
+    print("段落来源: %s   共 %d 屏" % ("temp/plan.json" if os.path.exists(PLAN)
+                                       else "SCREEN_COUNT 等分", len(rows)))
+    hdr = "屏号 | 幕 | 幕内序 | 场景函数 | 起止秒 | 起止帧 | 屏文字"
+    print(hdr)
+    for r in rows:
+        if n is not None and r["n"] != n:
+            continue
+        text = ""
+        if texts is not None and r["act"] < len(texts) and r["sub"] < len(texts[r["act"]]):
+            text = texts[r["act"]][r["sub"]]
+        print("%4d | %2d | %3d | %s | %.3f 到 %.3f | %d 到 %d | %s"
+              % (r["n"], r["act"] + 1, r["sub"] + 1, r["scene"],
+                 r["t0"], r["t1"], int(round(r["t0"] * cv.FPS)),
+                 int(round(r["t1"] * cv.FPS)) - 1, text))
+    if n is not None:
+        r = rows[n - 1]
+        print("改这一屏就改 %s(), 渲染区间是帧 %d 到 %d, 重渲后对对应批次 --redo"
+              % (r["scene"], int(round(r["t0"] * cv.FPS)),
+                 int(round(r["t1"] * cv.FPS)) - 1))
+    return 0
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "probe"
-    # plan 只算分工不画帧, 不必构建背景
+    # plan 与 screen 只读表不画帧, 不必构建背景
     if mode == "plan":
         n = None
         if len(sys.argv) > 2:
@@ -405,6 +478,15 @@ def main():
                 sys.exit(2)
         print_plan(n)
         return
+    if mode == "screen":
+        n = None
+        if len(sys.argv) > 2:
+            try:
+                n = int(sys.argv[2])
+            except ValueError:
+                print("屏号必须是整数: %s" % sys.argv[2])
+                sys.exit(2)
+        sys.exit(print_screen(n))
     setup()
     cv.configure(CUTS=SEG_OF[1:])
     if mode == "segments":

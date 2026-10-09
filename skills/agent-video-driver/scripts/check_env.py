@@ -155,14 +155,17 @@ def main():
         print("    影响: 立体段落不可用, 画面只能走 2D 路线; 其余能力不受影响")
 
     print("-" * 62)
-    fonts = {
-        "中文粗体 msyhbd": r"C:\Windows\Fonts\msyhbd.ttc",
-        "中文常规 msyh": r"C:\Windows\Fonts\msyh.ttc",
-        "等宽粗 consolab": r"C:\Windows\Fonts\consolab.ttf",
-        "等宽 consola": r"C:\Windows\Fonts\consola.ttf",
-    }
-    for name, p in fonts.items():
-        print("%s %-16s %s" % (OK if os.path.exists(p) else NO, name, p))
+    # 字体探测走 fonts.py: 同一套探测顺序 (环境变量目录, fc-list, 系统字体目录)
+    # 覆盖 Windows 与 Linux/macOS, 不再只看 Windows 的固定路径
+    try:
+        import fonts as _fonts
+        found, missing = _fonts.probe()
+        for key, _desc, _pats, required in _fonts.WANTED:
+            print("%s %-16s %s" % (OK if found.get(key) else NO, key, found.get(key) or "未找到"))
+        if missing:
+            print("    影响: 缺必需字体的键会在渲染时静默变豆腐块; 用 fonts.py 的探测结果填 FONT_PATH")
+    except Exception as e:
+        print("%s 字体探测 %s" % (NO, str(e)[:70]))
 
     print("-" * 62)
     try:

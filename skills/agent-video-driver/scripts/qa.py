@@ -1,22 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-按计划逐屏抽帧与总览: 把 plan.json 与成片对上, 产出给数据看的结果与给用户看的拼图
+按计划逐屏抽帧与总览: 把 plan.json 与画面对上, 产出给数据看的结果与给用户看的拼图
 
+  python scripts/qa.py temp/frames_proj --plan temp/plan.json --out temp/qa
   python scripts/qa.py <成片.mp4> --plan temp/plan.json --out temp/qa --anchor 8 12
   python scripts/qa.py temp/short.mp4 --plan temp/plan.json --sheet 12
 
+两种输入模式
+  帧序列模式: 输入是帧目录 (阶段 5.5 逐屏终检, 编码前跑), 每屏直接取屏内 80% 处那一帧
+    的 n%05d.png, 跳过 ffprobe 与锚点对比, 时长以 plan 为准
+  成片模式: 输入是 mp4 (阶段 7 客观验收, 编码后跑), 用 ffprobe 精确抽帧并做锚点对比
+
 做五件事
-  1 ffprobe 读成片实际时长与流信息, 与 plan.json 的 duration 与 fps 对照, 偏差按帧算,
-    超过 1 帧判为不合格
+  1 成片模式: ffprobe 读实际时长与流信息, 与 plan.json 的 duration 与 fps 对照,
+    偏差按帧算, 超过 1 帧判为不合格
   2 每屏抽 1 帧, 时间取 屏幕起点 + 0.8 * 屏时长, 避开入场动画未完成的那一段;
     时间已经越过片尾的屏进跳过清单, 于是短的试渲染也能对上整片的计划
-  3 锚点屏抽 切点前一帧 与 切点后一帧, 用 Pillow 算 MAE 与平均亮度差,
-    并与该屏前后普通帧对的水平对比, 看变化是不是正好落在切点帧上
-  4 锚点屏前后各 3 帧算相邻帧差分, 打印成一行数列, 峰值落在切点帧上才算卡点对齐
-    这是 卡点落在这一帧 的直接证据, 与全片逐帧差分找运动峰值的手段互补
+  3 逐屏表带幕号 (凭幕号猜屏号是返工根源, 反查用 scene_module.py screen N), 带 p95
+  4 成片模式: 锚点屏抽 切点前一帧 与 切点后一帧, 用 Pillow 算 MAE 与平均亮度差,
+    并与该屏前后普通帧对的水平对比, 看变化是不是正好落在切点帧上;
+    锚点屏前后各 3 帧算相邻帧差分, 打印成一行数列, 峰值落在切点帧上才算卡点对齐
   5 屏帧每 --sheet 张拼一页 6 列图, 每张下写 屏号与秒, 供人眼快速过一遍
 
-抽帧定位方式: 一律使用 `ffmpeg -i <成片> -ss <时间> -frames:v 1 -vf scale=W:-1 <输出>`.
+抽帧定位方式 (成片模式): 一律使用 `ffmpeg -i <成片> -ss <时间> -frames:v 1 -vf scale=W:-1 <输出>`.
 `-ss` 必须放在 `-i` 之后, 也就是输出侧定位. 输入侧的 `-ss` 会就近取关键帧, 抽到的可能
 不是要检查的那一帧, 卡点验收会直接失效; 输出侧定位会先解码再丢帧到指定时刻, 精确到帧.
 请求时间还要再前挪半帧, 抵消浮点进位: 目标帧时间戳是浮点值, 请求时间一进位就会被判成
@@ -184,14 +190,21 @@ def load_plan(path):
         for s in sc.get("screens") or []:
             raw.append((title, s))
     seq = 0
+    last_title = ""
+    title_seq = 0
     for title, s in raw:
         seq += 1
+        if title and title != last_title:
+            title_seq += 1
+            last_title = title
         item = _screen_of(s, seq, plan["fps"])
         if item is None:
             print("[警告] 计划第 %d 项读不出起点时间, 已跳过" % seq)
             continue
         if not item["scene"]:
             item["scene"] = title or ""
+        item["act"] = title_seq
+        item["act_title"] = title or ""
         plan["screens"].append(item)
     plan["screens"].sort(key=lambda x: x["t"])
     for i, item in enumerate(plan["screens"]):
@@ -246,12 +259,25 @@ def grab(src, t, out, width, fps=30.0):
 
 # ----------------------------------------------------------------- 拼图
 def sheet_font(size=15):
+    """拼图标注字体: Windows 固定路径优先, 缺了走 fonts.py 探测, 再缺退 Pillow 内置"""
     for p in FONTS:
         if os.path.exists(p):
             try:
                 return ImageFont.truetype(p, size)
             except Exception:
                 pass
+    try:
+        import fonts as _fonts
+        found, _missing = _fonts.probe()
+        for key in ("monor", "mono", "cn", "cnb"):
+            p = found.get(key)
+            if p:
+                try:
+                    return ImageFont.truetype(p, size)
+                except Exception:
+                    continue
+    except Exception:
+        pass
     try:
         return ImageFont.load_default(size)
     except Exception:
@@ -345,27 +371,58 @@ def extract_screens(video, screens, dur, outdir, fps):
             skipped.append((s["n"], t, "抽帧失败: %s" % err))
             continue
         got.append({"n": s["n"], "t": t, "dur": s["dur"], "path": path,
-                    "text": s.get("text", ""), "scene": s.get("scene", "")})
+                    "text": s.get("text", ""), "scene": s.get("scene", ""),
+                    "act": s.get("act", ""), "act_title": s.get("act_title", "")})
     return got, skipped
 
 
+def extract_from_frames(frames_dir, screens, fps, dur):
+    """帧序列模式: 每屏直接取屏内 80% 处那一帧的 n%05d.png, 不抽帧不解码"""
+    got, skipped = [], []
+    for s in screens:
+        if s["dur"] <= 0:
+            skipped.append((s["n"], s["t"], "屏时长非正"))
+            continue
+        t = s["t"] + 0.8 * s["dur"]
+        if t >= dur:
+            skipped.append((s["n"], t, "抽帧时间 %.3f s 已越过片尾 %.3f s" % (t, dur)))
+            continue
+        f = int(round(t * fps))
+        path = os.path.join(frames_dir, "n%05d.png" % f)
+        if not os.path.exists(path):
+            skipped.append((s["n"], t, "缺帧 %s" % path))
+            continue
+        got.append({"n": s["n"], "t": t, "dur": s["dur"], "path": path,
+                    "text": s.get("text", ""), "scene": s.get("scene", ""),
+                    "act": s.get("act", ""), "act_title": s.get("act_title", "")})
+    return got, skipped
+
+
+def p95_of(l):
+    return float(np.percentile(l, 95))
+
+
 def screen_table(got):
-    """屏号 | 时间 | 帧文件 | 平均亮度 | 高亮占比 | 与上一屏的 MAE"""
+    """屏号 | 幕 | 时间 | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏的 MAE"""
     print("")
-    print("屏号 | 时间s | 帧文件 | 平均亮度 | 高亮占比 | 与上一屏MAE")
+    print("屏号 | 幕 | 时间s | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏MAE")
     prev = None
     rows = []
     for it in got:
         a = load_rgb(it["path"])
         l = lum_of(a)
         mean = float(l.mean())
+        p95 = p95_of(l)
         bright = float((l > 140).mean())
         d = None if prev is None else mae(a, prev)
         rows.append({"n": it["n"], "t": it["t"], "path": it["path"],
-                     "mean": mean, "bright": bright, "mae_prev": d, "text": it["text"]})
+                     "mean": mean, "p95": p95, "bright": bright, "mae_prev": d,
+                     "text": it["text"], "act": it.get("act", ""),
+                     "act_title": it.get("act_title", ""), "scene": it.get("scene", "")})
         prev = a
-        print("%4d | %7.2f | %-28s | %8.1f | %8.3f | %s"
-              % (it["n"], it["t"], it["path"], mean, bright,
+        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %8.3f | %s"
+              % (it["n"], ("%2d" % it["act"]) if it.get("act") else " -",
+                 it["t"], it["path"], mean, p95, bright,
                  "-" if d is None else "%8.2f" % d))
     return rows
 
@@ -428,16 +485,17 @@ def anchor_check(video, anchor_n, screens, outdir, fps, dur):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="按计划逐屏抽帧与总览")
-    ap.add_argument("video", help="成片 mp4")
+    ap = argparse.ArgumentParser(description="按计划逐屏抽帧与总览, 输入给成片或帧目录")
+    ap.add_argument("video", help="成片 mp4, 或帧目录 (帧序列模式, 编码前的逐屏终检用)")
     ap.add_argument("--plan", default=os.path.join("temp", "plan.json"), help="计划 json")
     ap.add_argument("--out", default=os.path.join("temp", "qa"), help="产物目录")
-    ap.add_argument("--anchor", nargs="*", type=int, default=[], help="锚点屏号, 可多个")
+    ap.add_argument("--anchor", nargs="*", type=int, default=[], help="锚点屏号, 可多个, 仅成片模式")
     ap.add_argument("--sheet", type=int, default=24, help="每页拼图的屏帧数")
     ap.add_argument("--fps", type=float, default=30.0, help="计划缺 fps 时的兜底帧率")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
 
-    if not os.path.exists(a.video):
+    frames_mode = os.path.isdir(a.video)
+    if not frames_mode and not os.path.exists(a.video):
         print("找不到成片: %s" % a.video)
         return 2
     if not os.path.exists(a.plan):
@@ -446,25 +504,42 @@ def main(argv=None):
     if a.sheet <= 0:
         print("--sheet 必须是正数, 收到 %d" % a.sheet)
         return 2
+    if a.anchor and frames_mode:
+        print("帧序列模式下没有成片可抽锚点帧, 忽略 --anchor; 锚点对比在编码后的成片上做")
+        a.anchor = []
     plan = load_plan(a.plan)
     if not plan["screens"]:
         print("计划里没有任何屏, 检查 %s 的 scenes[].screens" % a.plan)
         return 2
-    try:
-        info = ffprobe(a.video)
-    except RuntimeError as e:
-        print("%s" % e)
-        return 2
-    info["path"] = a.video
-    info["plan_path"] = a.plan
-    info["screens"] = plan["screens"]
-    fps, bad = report_clip(info, plan, a.fps)
-    dur = info["duration"] or (plan["duration"] if plan["duration"] is not None else 0.0)
+    fps = plan["fps"] or a.fps
+    info = {"path": a.video, "plan_path": a.plan, "screens": plan["screens"],
+            "streams": "", "width": 0, "height": 0, "fps": None, "duration": None}
+    bad = []
+    if frames_mode:
+        plan_dur = plan["duration"]
+        if plan_dur is None:
+            print("帧序列模式要求计划里有 duration, 检查 %s" % a.plan)
+            return 2
+        dur = plan_dur
+        print("")
+        print("模式: 帧序列 (逐屏终检, 编码前); 时长与帧率以计划为准, 不做 ffprobe 对照")
+    else:
+        try:
+            probe = ffprobe(a.video)
+        except RuntimeError as e:
+            print("%s" % e)
+            return 2
+        info.update(probe)
+        fps, bad = report_clip(info, plan, a.fps)
+        dur = info["duration"] or (plan["duration"] if plan["duration"] is not None else 0.0)
     os.makedirs(a.out, exist_ok=True)
 
     print("")
     print("逐屏抽帧: 时间取 屏幕起点 + 0.8 * 屏时长, 宽 %d" % SCREEN_W)
-    got, skipped = extract_screens(a.video, plan["screens"], dur, a.out, fps)
+    if frames_mode:
+        got, skipped = extract_from_frames(a.video, plan["screens"], fps, dur)
+    else:
+        got, skipped = extract_screens(a.video, plan["screens"], dur, a.out, fps)
     print("  抽到 %d 帧 / 计划 %d 屏" % (len(got), len(plan["screens"])))
     if skipped:
         print("  跳过清单:")
@@ -500,6 +575,9 @@ def main(argv=None):
     if bad:
         print("结论: 不合格, %s" % "; ".join(bad))
         return 1
+    if frames_mode:
+        print("结论: 逐屏终检表已产出 (编码前); 拼图供肉眼过片, 异常屏用 scene_module.py screen N 反查")
+        return 0
     if HAVE_PIL:
         print("结论: 时长与帧率达标; 视觉判据见表与锚点数列")
     else:
