@@ -57,6 +57,8 @@ SHEET_PAD = 8
 LABEL_H = 22
 TOL_FRAMES = 1.0
 MAE_RATIO = 3.0
+# 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
+FRAME_PATTERN = "n%05d.png"
 FONTS = (r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\consolab.ttf")
 
 
@@ -388,7 +390,7 @@ def extract_from_frames(frames_dir, screens, fps, dur):
             skipped.append((s["n"], t, "抽帧时间 %.3f s 已越过片尾 %.3f s" % (t, dur)))
             continue
         f = int(round(t * fps))
-        path = os.path.join(frames_dir, "n%05d.png" % f)
+        path = os.path.join(frames_dir, FRAME_PATTERN % f)
         if not os.path.exists(path):
             skipped.append((s["n"], t, "缺帧 %s" % path))
             continue
@@ -518,7 +520,7 @@ def main(argv=None):
     if frames_mode:
         plan_dur = plan["duration"]
         if plan_dur is None:
-            print("帧序列模式要求计划里有 duration, 检查 %s" % a.plan)
+            print("帧序列模式要求计划里有 duration (timing.py 一直会写), 检查 %s" % a.plan)
             return 2
         dur = plan_dur
         print("")

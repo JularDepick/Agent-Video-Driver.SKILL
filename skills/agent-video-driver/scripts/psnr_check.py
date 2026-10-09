@@ -89,9 +89,12 @@ def run_psnr(frames, video, count, fps):
     pattern = os.path.join(frames, FRAME_PATTERN)
     cmd = ["ffmpeg", "-hide_banner", "-nostats",
            "-framerate", str(fps), "-i", pattern,
-           "-i", video, "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"]
+           "-i", video, "-lavfi", "[0:v][1:v]psnr"]
     if count and count > 0:
+        # -frames:v 是输出选项, 必须放在输出文件之前; 放在 "-f null -" 之后
+        # 是尾随选项, ffmpeg 会忽略它并警告, 结果就变成了量全片
         cmd += ["-frames:v", str(count)]
+    cmd += ["-f", "null", "-"]
     p = subprocess.run(cmd, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     out = (p.stdout or "") + (p.stderr or "")

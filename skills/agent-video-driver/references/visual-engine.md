@@ -133,7 +133,7 @@ impact(x, k, at, width, s)            # 落位压印, 起点 0 终点 1, 中段�
 | `cut_flash(c, t, cuts)` | 切点硬白闪, 燃向风格 |
 | `camera_settle(t, cuts, amount, tau, drift)` | 切点推进加全片漂移 |
 | `fade_to_black(c, a)` | 压黑收尾 |
-| `wash(a, color)` | 整幅洗成某色, 缺省洗成亮场底色; 用于整场反白两侧的过渡, 与 `fade_to_black` 是同一动作的两种取色 |
+| `c.wash(a, color)` | 画布方法, 整幅洗成某色, 缺省洗成亮场底色; 用于整场反白两侧的过渡, 与 `fade_to_black` 是同一动作的两种取色 |
 | `draw_grid` / `draw_axes` | 数学网格与坐标轴, 讲解类题材直接可用 |
 | `beat_ring(c, t, color, base, span, alpha)` | 每拍从原点扩散的圆环 |
 

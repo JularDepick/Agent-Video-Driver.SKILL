@@ -29,7 +29,6 @@ import argparse
 import os
 import subprocess
 import sys
-import tempfile
 
 import numpy as np
 
@@ -62,11 +61,10 @@ os.makedirs(OUT, exist_ok=True)
 BEAT = 60.0 / BPM
 BAR = 4 * BEAT
 if _A.sr:
-    # 低内存路线: 采样率在 import 期被覆盖, 之后所有音色与总线都按它走
+    # 低内存路线: 采样率在 import 期被覆盖, 之后所有音色与总线都按它走;
+    # dsp 内的 lp_fft/hp_fft/bp_fft/write_wav 读的是 dsp.SR 全局量, 覆盖对它们生效
     dsp.SR = int(_A.sr)
 SR = dsp.SR
-N = int(round(SR * DUR))
-T = np.arange(N) / SR
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 if _A.cuts:
@@ -331,7 +329,11 @@ def render_chunked():
     分段写盘: 每段独立合成与母带, 落盘成 wav 后用 ffmpeg concat 拼接
 
     切段边界优先落在切点上 (切点两侧的力度弧线与滚镲各归各段, 不会截半), 段太长时
-    按 CHUNK 再细分; 段与段是不同 ffmpeg 进程的输出, 采样率与声道一致, 拼接无损
+    按 CHUNK 再细分; 段与段是不同 ffmpeg 进程的输出, 采样率与声道一致, 拼接无损.
+    两处分段特有差异, 是这条低内存路线的代价, 文档要向用户写明:
+    1 跨段长音 (BAR+0.8 的弦乐, BAR+1.6 的合唱) 在段界被截断, 段尾的衰减尾巴丢了;
+      细分段时每段都要独立淡入淡出才不出咔声, 但那样接缝感比整条明显
+    2 rng 序列按段重新消费, 噪声层与颤音相位与整条路线不同 (听感等价, 样本不一致)
     """
     edges = [0.0]
     for cu in CUTS:
@@ -359,7 +361,6 @@ def render_chunked():
     parts = []
     try:
         for i, (a, b) in enumerate(final):
-            globals()["_SEG"] = (a, b)
             st = render_master(a, b)
             part = os.path.join(tmpdir, "part_%03d.wav" % i)
             write_wav(part, st)
@@ -484,16 +485,19 @@ def render_master(seg_a, seg_b):
                 add(air_b, choir(hz(semi), BAR + 1.6, 0.09 * s_choir * dyn), t0 - seg_a)
 
     # 滚镲渐强: 每个切点前铺 2 秒, 让转场有呼吸
+    # 起铺点落在段首之前的切点仍要铺: add 会把段首之前的部分自动截掉, 窗口可见段照常进入
     for cu in CUTS:
         if cu > 2.0 and seg_a < cu <= seg_b:
             add(perc_b, cymbal_swell(2.0, 0.20), cu - 2.0 - seg_a)
 
     # 力度弧线: 每个切点前 2.4 秒渐强, 切点后回落, 制造呼吸 (全程用绝对秒, 再平移到段内)
     # 切点在本段之前时弧线整体不可见 (i1 被 min 夹到 0), 此时必须整条跳过,
-    # 否则 i1 等于 i2 而 i2 窗口还在, linspace 长度对不上会广播报错
+    # 否则 i1 等于 i2 而 i2 窗口还在, linspace 长度对不上会广播报错.
+    # 切点恰好是本段段首时仍要画切点后的 0.9 秒回落窗: 分段边界常取切点,
+    # 不画的话回落窗整条丢失, 分段产物与整条在切点后电平不一致
     dyn_env = np.ones(seg_n)
     for cu in CUTS:
-        if cu <= seg_a or cu > seg_b:
+        if cu < seg_a or cu > seg_b:
             continue
         i0 = max(0, int(round((max(cu - 2.4, seg_a) - seg_a) * SR)))
         i1 = min(seg_n, int(round((cu - seg_a) * SR)))
@@ -548,7 +552,8 @@ def render_master(seg_a, seg_b):
     st = bus_compress(st, thr=0.22, power=0.50, tau=0.45)
     # 母带链内部顺序固定: 滤波 -> 软限幅 -> 淡入淡出 -> 归一化 -> 过采样真峰压制
     # 淡入淡出不再写在这里, 由母带链统一负责, 顺序错了整首会偏轻;
-    # 分段时淡入淡出只允许发生在整条片的首段与末段, 由 seg_a/seg_b 控制
+    # 分段时淡入淡出只允许发生在整条片的首段与末段, 由 seg_a/seg_b 控制.
+    # 中间段不加淡入淡出: 段界的音频内容是连续编排的, 拼接后与整条同听感
     fade_in = 1.0 if seg_a <= 0.0 else 0.0
     fade_out = 2.4 if seg_b >= DUR - 1e-6 else 0.0
     st, mrep = warm_master(st, dur=seg_b - seg_a, fade_in=fade_in, fade_out=fade_out,

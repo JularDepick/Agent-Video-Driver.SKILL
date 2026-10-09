@@ -37,6 +37,8 @@
      不足一小节的余数 (layout 之后恒为 0) 分给顺序里的第一个合格屏
      锚点造成的位移按 同幕内该屏之前的屏 从首屏起逐小节轮流补给
      位移补不够时再往前一幕的屏补, 但绝不补到已钉住的锚点之前, 否则会把它推走
+     唯一例外: 两个锚点钉在相邻两屏时, 延长前一个已钉屏自身的拍数 (不移动它的起点),
+     让后一屏够到目标小节
      位移不是整小节时, 会再用后续幕的前一屏补回, 保证每幕首屏仍然落在小节线上
   6 文案量撑不起音乐长度时打印醒目告警: 判据是合格屏平均每屏分到的额外时长
      超过 2 小节 (2 * bar); 告警给出内容所需小节, 音乐小节, 余量多少小节多少秒,
@@ -196,10 +198,19 @@ def layout(screens, scenes, meter, anchors):
                 cand = [j for j in scenes[sc_i]["screens"] if lo < j < gi]
                 if not cand:
                     cand = list(range(lo + 1, gi))
+                if not cand and lo >= 0 and gi == lo + 1:
+                    # 两个锚点钉在相邻两屏: 延长前一个已钉屏自身的拍数不移动它的起点
+                    # (锚点钉的是起点不是时长), 它仍钉在原小节, gi 被推到目标小节
+                    cand = [lo]
                 if not cand:
-                    print("锚点冲突: 第 %d 屏要求第 %d 小节, 但第 %d 屏已钉在更晚的小节"
-                          % (gi + 1, bar + 1, lo + 1))
-                    print("屏序与时间序矛盾: 后一屏不能排在前一屏的前面, 请调换两个锚点")
+                    if gi < lo:
+                        print("锚点冲突: 第 %d 屏要求第 %d 小节, 但第 %d 屏已钉在更早的小节"
+                              % (gi + 1, bar + 1, lo + 1))
+                        print("屏序与时间序矛盾: 前面的屏不能排在后面的屏之后, 请检查两个锚点的屏号与小节号")
+                    else:
+                        print("锚点冲突: 第 %d 屏要求第 %d 小节, 但它与上一个锚点屏之间没有可补位移的屏"
+                              % (gi + 1, bar + 1))
+                        print("把两个锚点之间的文案加长一拍 (--fix), 或把后一个锚点的小节号调小")
                     return None, None, None
                 bars, rem = divmod(target - cur, meter)
                 for k in range(bars):
@@ -393,8 +404,12 @@ def main():
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-    with open(a.json_path, "w", encoding="utf-8") as f:
+    # plan.json 是场景模块的段落边界唯一来源, 也原子写: 写一半被中断会留下截断 JSON,
+    # 场景模块的 load_plan 虽然容错, 但会让整条片退回常量段表, 时间轴全错
+    tmp = a.json_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(plan, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, a.json_path)
     write_md(a.md_path, screens, scenes, beat, a.meter, a.fps)
 
     print("输入 %s: %d 幕 %d 屏, 跳过 %d 行" % (a.script, len(scenes), len(screens), skipped))

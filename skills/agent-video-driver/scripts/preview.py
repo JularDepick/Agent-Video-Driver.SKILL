@@ -174,7 +174,7 @@ def frame_path(frames, i):
     return os.path.join(frames, FRAME_PATTERN % i)
 
 
-def around(frames, idx, radius=3, ink=False):
+def around(frames, idx, radius=3, ink=False, edge=False):
     """打印指定帧前后各 radius 帧的字符图与相邻帧差分, 末了报峰值帧落在第几帧"""
     items = []
     for i in range(max(0, idx - radius), idx + radius + 1):
@@ -194,11 +194,11 @@ def around(frames, idx, radius=3, ink=False):
             diffs.append((i, d))
         s = stats(p)
         print("=" * 100)
-        print("%s mean=%.1f p99=%.0f bright=%.3f dark=%.3f dmae_prev=%s%s"
+        print("%s mean=%.1f p99=%.0f bright=%.3f dark=%.3f dmae_prev=%s%s%s"
               % (p, s["mean"], s["p99"], s["bright_frac"], s["dark_frac"],
                  "-" if d is None else "%.2f" % d,
-                 "  ink" if ink else ""))
-        txt, _ = preview(p, ink=ink)
+                 "  ink" if ink else "", "  edge" if edge else ""))
+        txt, _ = preview(p, ink=ink, edge=edge)
         print(txt)
         prev = a
     print("=" * 100)
@@ -240,7 +240,7 @@ def main(argv=None):
         if not os.path.isdir(frames):
             print("帧目录不存在: %s" % frames)
             return 2
-        return around(frames, idx, radius, a.ink)
+        return around(frames, idx, radius, a.ink, a.edge)
     if not a.paths:
         ap.print_help()
         return 2

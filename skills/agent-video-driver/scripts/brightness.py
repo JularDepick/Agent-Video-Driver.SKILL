@@ -59,12 +59,15 @@ def grab(video, t, out_path):
     从视频里精确抽一帧
 
     定位参数必须放在 -i 之后: 放在前面是输入定位, 会跳到目标时间之前最近的关键帧,
-    抽到的不是目标帧, 判据就失效了 (见 pitfalls.md 的抽帧一条)
+    抽到的不是目标帧, 判据就失效了 (见 pitfalls.md 的抽帧一条).
+    与 qa.py 的 grab 同一条规矩: 请求时间往前挪半帧再格式化, 否则浮点进位会
+    把抽帧整体推到下一帧, 亮度对照的口径就错了.
     """
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg not found, 请确认它在 PATH 中")
+    ss = max(0.0, t - 0.5 / 30.0)
     p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", video,
-                        "-ss", "%.6f" % max(0.0, t), "-frames:v", "1", out_path],
+                        "-ss", "%.6f" % ss, "-frames:v", "1", out_path],
                        capture_output=True, text=True)
     if p.returncode != 0 or not os.path.exists(out_path):
         raise RuntimeError("抽帧失败: %s" % (p.stderr or "").strip()[:200])

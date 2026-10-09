@@ -90,7 +90,12 @@ lum = ambient + key_gain * lam + rim_gain * rim
 
 前面板的细节**不要用贴图**: 把面板四角做同样的旋转投影, 得到投影后的四边形, 再在**那个平面里**画通风栅, 硬盘位与状态灯. 这样透视是正确的, 而且细节会随旋转动.
 
-`box_surface` 的 `front_bias` 让前面板采样更密, 于是不用网格也能显出栅格.
+`box_surface` 返回三项 `(P, N, dw)`, 第三项 `dw` 是密度权重 (与 `sample` 的第三项 `(nu, nv)` 不是一回事, 解包不要共用变量名). `front_bias` 只有把它显式传给 render 才生效, 漏传就六面等权, 前面板显不出栅格:
+
+```python
+P, N, dw = th.box_surface(centre, size, front_bias=4.0)
+cov, lum, depth = th.render(cam, P, N, weights=dw)
+```
 
 ### 数据缎带 (sweep_ellipse 加真实数据)
 

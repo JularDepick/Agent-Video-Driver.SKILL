@@ -499,7 +499,7 @@ def main(argv=None):
     a = parse_args(argv)
     total = count_frames(a.frames)
     if total == 0:
-        print("错误: 在 %s 下没数到 n%%05d.png, 先确认帧目录与命名" % a.frames)
+        print("错误: 在 %s 下没数到 %s 命名的帧, 先确认帧目录与命名" % (a.frames, FRAME_PATTERN))
         return 2
     cfg = build_config(a, total)
     os.makedirs(os.path.dirname(cfg["out"]) or ".", exist_ok=True)
@@ -509,7 +509,8 @@ def main(argv=None):
     if miss:
         head = ", ".join(str(x) for x in miss[:8])
         more = "" if len(miss) <= 8 else " 等 %d 处" % len(miss)
-        print("错误: 帧目录缺帧, 数到 %d 张但帧号 [0, %d) 有空洞: %s%s" % (total, total, head, more))
+        print("错误: 帧目录缺帧, 帧号 [0, %d) 有空洞, 共 %d 处: %s%s"
+              % (total, len(miss), head, more))
         print("  中间缺帧会让对应批次编码中途失败; 补渲缺的帧, 或把完整帧目录放回来")
         return 2
 
@@ -622,7 +623,7 @@ def main(argv=None):
             write_state(state_path, state)
             code, tail = encode_batch(cfg, lim, b, b["seg"], state, state_path)
             b["seconds"] = round(time.time() - b["t0"], 1)
-            b.pop("t0", None)
+            b["t0"] = None  # 结算完清成显式 None: 硬杀后前端见到 running 无 t0 就知道是残留
             if code != 0:
                 b["status"] = "failed"
                 state["stage"] = "failed"
@@ -710,12 +711,8 @@ def main(argv=None):
                       "该批必须用 --redo 重编")
         write_state(state_path, state)
         print("质检实测值 (真峰, 响度, PSNR) 已写进状态文件: %s" % state_path)
-        if cfg["video_only"] and os.path.exists(cfg["video_only"]):
-            print("提醒: 视频流会在本步末尾删除; 之后想复测 PSNR 用 "
-                  "python scripts/psnr_check.py --frames <帧目录> --video <成片>")
-        else:
-            print("提醒: 视频流已不在, 想复测 PSNR 用 "
-                  "python scripts/psnr_check.py --frames <帧目录> --video <成片>")
+        print("提醒: 视频流已删, 之后想复测 PSNR 用 "
+              "python scripts/psnr_check.py --frames <帧目录> --video <成片>")
 
         if os.path.exists(cfg["video_only"]):
             os.remove(cfg["video_only"])

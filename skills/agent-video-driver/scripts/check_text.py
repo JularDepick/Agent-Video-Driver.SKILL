@@ -164,6 +164,9 @@ def main():
         if t not in seen:
             seen.add(t)
             uniq.append(t)
+    if not "".join(uniq).strip():
+        print("[提示] 抽到的文本全是空白, 没有可体检的字符; 不当作通过, 防止空输入静默过关")
+        return 1
     for k in kinds:
         if k not in FONTS:
             print("[bad]  未知字体键 %s, 可用: %s" % (k, " ".join(FONTS)))

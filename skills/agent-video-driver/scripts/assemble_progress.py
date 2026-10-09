@@ -87,7 +87,11 @@ def bar(done, total, width=BAR):
 
 
 def summarize(state):
-    """从状态文件算进度, 已用与预计剩余; 只依据状态文件里的实测值, 不做估计"""
+    """从状态文件算进度, 已用与预计剩余; 只依据状态文件里的实测值, 不做估计
+
+    running 批必须有 t0 才累计耗时; 没有 t0 (上一次运行被硬杀的残留状态) 时按 0 处理,
+    宁可 ETA 偏保守也不把"从上次启动到现在"当成这批的耗时
+    """
     cfg = state.get("config") or {}
     total = int(cfg.get("total_frames") or 0)
     batches = state.get("batches") or []
@@ -129,6 +133,12 @@ def draw(state, state_path, alive_text):
         print("  ffmpeg 速度   %s" % state["speed"])
     batches = state.get("batches") or []
     if batches:
+        # running 且无 t0 = 上次运行被硬杀的残留状态, 标出来提醒它的耗时不可信
+        stale = [b.get("index", 0) for b in batches
+                 if b.get("status") == "running" and not b.get("t0")]
+        if stale:
+            print("  注意          批 %s 标记 running 但没有计时起点 (上次运行被中断的残留), "
+                  "其耗时未计入已用" % stale)
         print("  批次表 (起止帧, 状态, 耗时, 体积):")
         for b in batches:
             size = float(b.get("bytes") or 0) / 1048576.0

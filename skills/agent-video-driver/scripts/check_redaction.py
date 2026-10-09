@@ -148,10 +148,10 @@ def scan_file(path, words):
     if text is None:
         return []
     hits = []
+    low = text.lower()
     for wi, w in enumerate(words):
-        start = 0
-        low = text.lower()
         needle = w.lower()
+        start = 0
         while True:
             idx = low.find(needle, start)
             if idx < 0:

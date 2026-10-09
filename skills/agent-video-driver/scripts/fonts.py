@@ -72,11 +72,8 @@ def probe():
     """返回 {键: 路径或 None}, 以及未找到的必需键清单"""
     dirs = search_dirs()
     by_name = {}
-    for d in dirs:
-        # 单层就够: Windows 字体目录是平的, Noto 在子目录里时靠 fc-list 兜底
-        for p in glob.glob(os.path.join(d, "*")):
-            if os.path.isfile(p):
-                by_name.setdefault(os.path.basename(p).lower(), p)
+    # 递归一层就够: Windows 字体目录是平的, Noto 在发行包的子目录里,
+    # 更深的遍历在 C:\Windows\Fonts 上是纯浪费, fc-list 兜底系统注册过的字体
     for d in dirs:
         for p in glob.glob(os.path.join(d, "**", "*"), recursive=True):
             if os.path.isfile(p):
@@ -98,14 +95,14 @@ def probe():
 
 
 def main(argv=None):
-    args = sys.argv[1:] if argv is not None else argv
+    args = list(argv) if argv is not None else sys.argv[1:]
     found, missing = probe()
     print("字体探测:")
     for key, desc, _pats, required in WANTED:
         p = found[key]
         tag = "" if p else ("  [必需]" if required else "  [可选]")
         print("  %-6s %-18s %s%s" % (key, desc, p or "未找到", tag))
-    if args and args[0] == "--script":
+    if "--script" in args:
         print("")
         print("FONT_PATH 片段 (粘进场景模块, 或作为 configure 的实参):")
         print("FONT_PATH = {")
@@ -113,8 +110,9 @@ def main(argv=None):
             if found[key]:
                 print('    "%s": r"%s",' % (key, found[key]))
         print("}")
-    if args and args[0] == "--json":
-        dst = args[1] if len(args) > 1 else os.path.join("temp", "fonts.json")
+    if "--json" in args:
+        idx = args.index("--json")
+        dst = args[idx + 1] if idx + 1 < len(args) else os.path.join("temp", "fonts.json")
         parent = os.path.dirname(os.path.abspath(dst))
         os.makedirs(parent, exist_ok=True)
         with open(dst, "w", encoding="utf-8") as f:

@@ -121,7 +121,14 @@ def box_surface(centre, size, nu=64, nv=64, front_bias=3.0):
     """
     长方体点云: 六个面各自采样
 
-    前面板采样得比其它面密, 才能在不加网格与贴图的情况下让机柜显出栅格与硬盘位
+    返回 (P, N, dw); 第三项 dw 是各采样点的相对密度权重, 不是形状参数,
+    与 sample() 的第三项 (nu, nv) 语义不同, 解包时不要用同一个变量名接.
+    前面板采样权重比其它面高, 但它只在你显式传给 render 的 weights 时才生效:
+
+        P, N, dw = th.box_surface(...)
+        cov, lum, depth = th.render(cam, P, N, weights=dw)
+
+    不传 weights 就六面等权, 前面板显不出栅格与硬盘位.
     """
     cx, cy, cz = centre
     hx, hy, hz = size[0] / 2.0, size[1] / 2.0, size[2] / 2.0

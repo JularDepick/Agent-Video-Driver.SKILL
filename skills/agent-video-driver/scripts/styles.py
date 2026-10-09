@@ -298,11 +298,12 @@ def draw(seed=None, avoid=(), tone=None, rng=None):
     """
     抽一张牌
 
-    seed 给了就复现同一张; avoid 里的 id 会被排除; tone 可以限定只抽某一档.
-    抽不到时返回 None, 由调用方决定是放宽条件还是报错.
+    seed 给了就复现同一张; avoid 里的 id 会被排除 (大小写不敏感, 与 get 同一口径);
+    tone 可以限定只抽某一档. 抽不到时返回 None, 由调用方决定是放宽条件还是报错.
     """
     import random
-    pool = [c for c in DECK if c["id"] not in set(avoid)]
+    banned = {str(x).strip().lower() for x in avoid}
+    pool = [c for c in DECK if c["id"] not in banned]
     if tone:
         pool = [c for c in pool if c["tone"] == tone]
     if not pool:

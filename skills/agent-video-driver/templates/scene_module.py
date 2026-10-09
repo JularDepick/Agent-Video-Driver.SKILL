@@ -31,6 +31,14 @@ import math
 
 from PIL import Image
 
+# 引擎脚本复制到工程 scripts/ 下, 而本文件按惯例放在工程根:
+# 以 `python scene_module.py ...` 运行时 sys.path[0] 是工程根, 不含 scripts/,
+# 不引导的话 import canvas 直接 ModuleNotFoundError, 全部子命令都起不来
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_SCRIPTS = os.path.join(_HERE, "scripts")
+if os.path.isdir(_SCRIPTS) and _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
 import canvas as cv
 
 # scripts/resources.py 是可选的, 单独把这个模板复制走也要能跑
@@ -80,19 +88,27 @@ def setup():
 
 def load_plan(path=None):
     """
-    有 plan.json 就返回它的幕边界秒数组, 没有就返回 None
-    数组长度比幕数多 1, 末项是片尾
+    有 plan.json 就返回它的幕边界秒数组, 读不到或内容损坏就返回 None
+    数组长度比幕数多 1, 末项是片尾.
+    与 _plan_screens/_plan_screen_texts 同一套容错: plan.json 是 timing.py
+    非原子写出的, 写一半被中断会留下截断 JSON, 这里不能让整条 traceback
+    把场景模块的 import 打断 (那样 segments/plan/screen/render 全不可用)
     """
     path = path or PLAN
     if not os.path.exists(path):
         return None
-    with open(path, encoding="utf-8") as f:
-        p = json.load(f)
-    starts = []
-    for sc in p.get("scenes", []):
-        screens = sc.get("screens") or []
-        if screens:
-            starts.append(float(screens[0]["t"]))
+    try:
+        with open(path, encoding="utf-8") as f:
+            p = json.load(f)
+        starts = []
+        for sc in p.get("scenes", []):
+            screens = sc.get("screens") or []
+            if screens:
+                starts.append(float(screens[0]["t"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        print("[警告] plan.json 读不到或内容损坏, 段落表退回 SEG_OF_DEMO 常量: %s"
+              % path, flush=True)
+        return None
     if not starts:
         return None
     dur = float(p.get("duration") or DUR)

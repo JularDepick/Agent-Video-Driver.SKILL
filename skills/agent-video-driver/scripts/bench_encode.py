@@ -114,10 +114,15 @@ def probe_duration(path):
 
 
 def measure_psnr(pattern, fps, video, count):
-    """与 assemble.ps1 的质检同口径: 源帧与成片逐帧比对, 取最后一条 average"""
-    code, out = run([FFMPEG, "-hide_banner", "-nostats",
-                     "-framerate", str(fps), "-i", pattern,
-                     "-i", video, "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"])
+    """与 assemble.ps1 的质检同口径: 源帧与成片逐帧比对, 取最后一条 average
+    count 只量被编码的那段, 不传量全目录会拖到视频 EOF 之后 (repeat 末帧), PSNR 假性偏低"""
+    cmd = [FFMPEG, "-hide_banner", "-nostats",
+           "-framerate", str(fps), "-i", pattern,
+           "-i", video, "-lavfi", "[0:v][1:v]psnr"]
+    if count and count > 0:
+        cmd += ["-frames:v", str(count)]
+    cmd += ["-f", "null", "-"]
+    code, out = run(cmd)
     hits = re.findall(r"average:(\d+(?:\.\d+)?|inf)", out)
     if not hits:
         return None
