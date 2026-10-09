@@ -18,7 +18,8 @@ jobs:
       - name: 打包 skills/ 下的技能
         run: |
           set -euo pipefail
-          ZIP="Agent-Video-Driver.SKILL.zip"
+          # 压缩包名直接使用 Release 的 tag, 形如 Agent-Video-Driver.SKILL-v0.1.0.zip
+          ZIP="Agent-Video-Driver.SKILL-${{ github.event.release.tag_name }}.zip"
           # 打包 skills/ 的下一层内容, 于是解压出来直接是 agent-video-driver/,
           # 可以整个目录拷进技能目录, 与 README 的安装说明一致.
           # 用 find 生成文件名并去掉前缀 ./, 避免压缩包里出现 ./
@@ -48,4 +49,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            Agent-Video-Driver.SKILL.zip --clobber
+            "Agent-Video-Driver.SKILL-${{ github.event.release.tag_name }}.zip" --clobber

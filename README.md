@@ -2,7 +2,7 @@
 
 # Agent-Video-Driver.SKILL
 
-[![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/main)
+[![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/v0.1.0)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 [![Website](https://img.shields.io/badge/Website-online-38BDF8)](https://julardepick.github.io/Agent-Video-Driver.SKILL/)
@@ -117,7 +117,7 @@ python scripts/assemble_progress.py --watch
 
 把整个 [`skills/agent-video-driver`](./skills/agent-video-driver) 目录拷进你的技能目录即可, 发现深度只有一层.
 
-也可以直接从 [Releases](https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases) 下载 `Agent-Video-Driver.SKILL.zip`, 解压出来的 `agent-video-driver/` 直接可用.
+也可以直接从 [Releases](https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases) 下载 `Agent-Video-Driver.SKILL*.zip`, 解压出来的 `agent-video-driver/` 直接可用.
 
 也可以把这一句交给任何编程 Agent:
 

@@ -18,7 +18,7 @@ export const SITE = {
   license: 'Apache-2.0',
   repo: 'https://github.com/JularDepick/Agent-Video-Driver.SKILL',
   releases: 'https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases',
-  zipName: 'Agent-Video-Driver.SKILL.zip',
+  zipName: 'Agent-Video-Driver.SKILL*.zip',
   skillDir: 'skills/agent-video-driver',
   // 一句话介绍: 与 README 两版以及 SKILL.md 的 description 保持一致
   tagline: '一个 Agent SKILL, 让你的 Agent 用脚本化的工具链自主生成视频, 不需要任何视频生成模型.',
@@ -79,7 +79,7 @@ export const REQUIREMENTS = [
 export const INSTALLS = [
   {
     label: '下载技能包',
-    hint: '从 Releases 取 zip, 解压出来的 agent-video-driver/ 直接可用',
+    hint: '从 Releases 取 zip (文件名带版本号), 解压出来的 agent-video-driver/ 直接可用',
     command: '',
     link: 'releases',
   },

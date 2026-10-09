@@ -2,7 +2,7 @@
 
 # Agent-Video-Driver.SKILL
 
-[![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/main)
+[![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/v0.1.0)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 [![Website](https://img.shields.io/badge/Website-online-38BDF8)](https://julardepick.github.io/Agent-Video-Driver.SKILL/)
@@ -117,7 +117,7 @@ The default route needs no browser, no Node.js and no stock library. `python scr
 
 Copy the whole [`skills/agent-video-driver`](./skills/agent-video-driver) directory into your skills directory. Discovery depth is one level.
 
-You can also download `Agent-Video-Driver.SKILL.zip` from [Releases](https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases); the `agent-video-driver/` it unpacks to is ready to use as is.
+You can also download `Agent-Video-Driver.SKILL*.zip` from [Releases](https://github.com/JularDepick/Agent-Video-Driver.SKILL/releases); the `agent-video-driver/` it unpacks to is ready to use as is.
 
 Or hand this line to any coding agent:
 
