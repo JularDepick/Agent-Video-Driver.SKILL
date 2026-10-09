@@ -11,6 +11,9 @@
 纪律:
   只读技能目录, 只写用户指定的项目目录, 不改技能里的模板真源
   目标目录非空时拒绝开工, 要覆盖必须显式加 --force
+
+画幅: --aspect 16:9 (缺省, 1920x1080) / 9:16 (1080x1920) / 1:1 (1080x1080),
+或 --width 与 --height 给自定义偶数宽高; 不给时取模板缺省 1920x1080
 """
 import argparse
 import os
@@ -49,7 +52,38 @@ CREDITS_SKELETON = """# 外部素材署名与许可
 """
 
 
-def patch_scene_module(text, bpm, dur, fps, prefix):
+def resolve_aspect(args):
+    """
+    把 --aspect / --width / --height 解析成 (W, H)
+
+    返回 None 表示未给画幅参数, 用模板缺省; 返回 False 表示参数非法, 调用方退出.
+    --aspect 支持三档预设; --width 与 --height 是自定义宽高, 必须是偶数
+    (编码器要求偶数尺寸), 两者要么都给要么都不给; 与 --aspect 同时给时拒绝
+    """
+    if args.aspect and (args.width or args.height):
+        print("--aspect 与 --width/--height 不要同时给")
+        return False
+    if args.aspect:
+        presets = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080)}
+        if args.aspect not in presets:
+            print("--aspect 只支持 %s, 收到 %r" % (", ".join(presets), args.aspect))
+            return False
+        return presets[args.aspect]
+    if bool(args.width) != bool(args.height):
+        print("--width 与 --height 要么都给要么都不给")
+        return False
+    if args.width:
+        if args.width <= 0 or args.height <= 0:
+            print("--width 与 --height 都要大于 0")
+            return False
+        if args.width % 2 or args.height % 2:
+            print("--width 与 --height 都必须是偶数 (编码器要求)")
+            return False
+        return (args.width, args.height)
+    return None
+
+
+def patch_scene_module(text, bpm, dur, fps, prefix, wh=None):
     """
     改写复制出来的场景模块顶部常量
 
@@ -62,6 +96,8 @@ def patch_scene_module(text, bpm, dur, fps, prefix):
         (r'FRAMES=os\.path\.join\("temp", "[^"]*"\)',
          'FRAMES=os.path.join("temp", "frames_%s")' % prefix, "FRAMES 前缀"),
     ]
+    if wh is not None:
+        subs.append((r"(?m)^W, H = .*$", "W, H = %d, %d" % wh, "画幅常量"))
     for pat, rep, name in subs:
         text, n = re.subn(pat, rep, text, count=1)
         if n != 1:
@@ -103,9 +139,10 @@ def patch_scene_module(text, bpm, dur, fps, prefix):
     if n != 1:
         raise RuntimeError("模板里找不到 SCREEN_COUNT 常量, 先确认 templates/scene_module.py 是否改过")
 
-    # 帧率与画布也在顶部一次定下来, 免得后面靠默认值猜
-    pat = r'cv\.configure\(BPM=BPM, DUR=DUR, FRAMES=os\.path\.join\("temp", "[^"]*"\)\)'
-    rep = ("cv.configure(BPM=BPM, DUR=DUR, FPS=%d, "
+    # 帧率, 画布与帧目录也在顶部一次定下来, 免得后面靠默认值猜
+    # 模板的 configure 行固定带 W=W, H=H (画幅由顶部常量给), 这里只把 FPS 与帧目录插进去
+    pat = (r'cv\.configure\(BPM=BPM, DUR=DUR, W=W, H=H, FRAMES=os\.path\.join\("temp", "[^"]*"\)\)')
+    rep = ("cv.configure(BPM=BPM, DUR=DUR, W=W, H=H, FPS=%d, "
            "FRAMES=os.path.join(\"temp\", \"frames_%s\"))" % (fps, prefix))
     text, n = re.subn(pat, rep, text, count=1)
     if n != 1:
@@ -162,6 +199,10 @@ def main():
     ap.add_argument("--bpm", type=float, default=100.0, help="配乐 BPM, 缺省 100")
     ap.add_argument("--dur", type=float, default=108.0, help="片长秒数, 缺省 108")
     ap.add_argument("--fps", type=int, default=30, help="帧率, 缺省 30")
+    ap.add_argument("--aspect", default=None,
+                    help="画幅预设: 16:9 (缺省) / 9:16 / 1:1; 与 --width/--height 二选一")
+    ap.add_argument("--width", type=int, default=None, help="自定义画幅宽, 偶数, 与 --height 成对")
+    ap.add_argument("--height", type=int, default=None, help="自定义画幅高, 偶数, 与 --width 成对")
     ap.add_argument("--prefix", default=None, help="帧目录前缀, 缺省取项目目录名的小写")
     ap.add_argument("--style", default=None, help="风格牌 id, 交给 style_lottery.py 落成 STYLE.md")
     ap.add_argument("--tone", choices=("loud", "steady", "light"), default=None,
@@ -172,6 +213,9 @@ def main():
 
     if a.bpm <= 0 or a.dur <= 0 or a.fps <= 0:
         print("--bpm / --dur / --fps 都要大于 0")
+        return 2
+    wh = resolve_aspect(a)
+    if wh is False:
         return 2
     if not os.path.isdir(SCRIPTS) or not os.path.isdir(TEMPLATES):
         print("找不到技能内的 scripts/ 或 templates/, 本脚本要在技能目录里运行")
@@ -198,18 +242,23 @@ def main():
     with open(src, encoding="utf-8") as f:
         text = f.read()
     try:
-        text, bars, n_seg = patch_scene_module(text, a.bpm, a.dur, a.fps, prefix)
+        text, bars, n_seg = patch_scene_module(text, a.bpm, a.dur, a.fps, prefix, wh)
     except RuntimeError as e:
         print(str(e))
         return 2
     with open(os.path.join(project, "scene_module.py"), "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
-    print("scene_module.py: BPM %s, 时长 %s 秒, %d fps, %d 小节, %d 个演示段, 帧目录 temp/frames_%s"
-          % (a.bpm, a.dur, a.fps, bars, n_seg, prefix))
+    if wh is not None:
+        print("scene_module.py: BPM %s, 时长 %s 秒, %d fps, 画幅 %dx%d, %d 小节, %d 个演示段, 帧目录 temp/frames_%s"
+              % (a.bpm, a.dur, a.fps, wh[0], wh[1], bars, n_seg, prefix))
+    else:
+        print("scene_module.py: BPM %s, 时长 %s 秒, %d fps, 画幅取模板缺省 1920x1080, %d 小节, %d 个演示段, 帧目录 temp/frames_%s"
+              % (a.bpm, a.dur, a.fps, bars, n_seg, prefix))
 
     pairs = [
         ("brief.md", os.path.join("prompts", "brief.md")),
         ("stage-prompt.md", os.path.join("prompts", "stage-prompt.md")),
+        ("requirements.md", os.path.join("prompts", "requirements.md")),
         ("screen-script.md", "script.md"),
         ("storyboard.md", "storyboard.md"),
     ]
@@ -221,7 +270,7 @@ def main():
         shutil.copy2(s, os.path.join(project, dst_rel))
     with open(os.path.join(project, "credits.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(CREDITS_SKELETON)
-    print("骨架: prompts/brief.md, prompts/stage-prompt.md, script.md, storyboard.md, credits.md")
+    print("骨架: prompts/brief.md, prompts/stage-prompt.md, prompts/requirements.md, script.md, storyboard.md, credits.md")
 
     write_style(project, a.style, a.seed, a.tone)
 

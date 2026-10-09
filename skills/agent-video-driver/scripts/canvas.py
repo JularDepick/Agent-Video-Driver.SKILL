@@ -36,7 +36,7 @@ BPM = 120.0
 BEAT = 60.0 / BPM
 BAR = 4 * BEAT
 CUTS = []
-OX, OY = 960.0, 540.0
+OX, OY = W / 2.0, H / 2.0
 U = 100.0
 FRAMES = os.path.join("temp", "frames")
 # 帧文件命名的唯一来源: 外部脚本 (编码, 验收, 抽帧) 一律引用它, 不要各写一份字面量
@@ -46,6 +46,24 @@ FRAME_PATTERN = "n%05d.png"
 def frame_path(i):
     """第 i 帧的落盘路径: FRAMES 目录加 FRAME_PATTERN, 外部脚本统一用它"""
     return os.path.join(FRAMES, FRAME_PATTERN % i)
+
+
+# ----------------------------------------------------------------- 画幅派生
+# 以下布局量全部由画幅派生, 1920x1080 下逐像素等于历史值, 组件的缺省坐标不再写死
+# 派生基准统一取画幅短边: 三档预设 (16:9, 9:16, 1:1) 的短边都是 1080, 结果与 16:9 相同
+def margin_px():
+    """四角安全边距, 16:9 时等于既有的 112"""
+    return round(min(W, H) * 112.0 / 1080.0)
+
+
+def caption_y():
+    """底部字幕的缺省 y, 距底边 180 (16:9 时的既有值)"""
+    return H - round(min(W, H) * 180.0 / 1080.0)
+
+
+def footer_y():
+    """底部进度线的缺省 y, 距底边 34"""
+    return H - round(min(W, H) * 34.0 / 1080.0)
 
 FONT_PATH = {
     "cnb": r"C:\Windows\Fonts\msyhbd.ttc",
@@ -288,16 +306,31 @@ def configure(**kw):
     """
     覆盖全局配置, 典型调用
       canvas.configure(BPM=100, DUR=108.0, CUTS=[...], FRAMES=r"...", FONT_PATH={...})
+    覆盖 W 或 H 时数学原点 OX/OY 自动落到新画幅中点; 覆盖 BPM 时拍长与小节长自动重派生
     """
     g = globals()
     for k in kw:
         if k not in g:
             raise KeyError("unknown canvas config: %s" % k)
     g.update(kw)
+    if "W" in kw or "H" in kw:
+        g["OX"], g["OY"] = g["W"] / 2.0, g["H"] / 2.0
     if "BPM" in kw:
         g["BEAT"] = 60.0 / float(kw["BPM"])
         g["BAR"] = 4 * g["BEAT"]
     return g
+
+
+def aspect_preset(name):
+    """
+    画幅预设: 返回 (W, H); 名称不认识时抛 KeyError
+
+    16:9 是横屏缺省; 9:16 竖屏与 1:1 方屏都以短边 1080 为基准, 与 16:9 的短边一致
+    """
+    presets = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080)}
+    if name not in presets:
+        raise KeyError("画幅预设只有 %s, 收到 %r" % (", ".join(presets), name))
+    return presets[name]
 
 
 def nframes():
@@ -1004,7 +1037,11 @@ def draw_axes(c, prog=1.0, alpha=1.0, ticks=True, labels=True):
         c.text(G(-0.34, -0.38), "O", 34, DIM, alpha * a, anchor="mm", kind="monor")
 
 
-def chapter(c, t, text, sub=None, accent=CYAN, appear=0.0, x=126.0, y=112.0, alpha=1.0):
+def chapter(c, t, text, sub=None, accent=CYAN, appear=0.0, x=None, y=None, alpha=1.0):
+    if x is None:
+        x = round(min(W, H) * 126.0 / 1080.0)
+    if y is None:
+        y = round(min(W, H) * 112.0 / 1080.0)
     a = eo(seg(t, appear, appear + 0.45)) * alpha
     if a <= 0.004:
         return
@@ -1019,7 +1056,8 @@ def beat_bar(c, t, alpha=1.0):
     if alpha <= 0.004:
         return
     n = 60
-    x0, x1, y = 250.0, 1670.0, 1016.0
+    m = margin_px()
+    x0, x1, y = float(m + 138), W - m - 138.0, H - 64.0
     cur = t / BEAT
     for i in range(n):
         x = x0 + (x1 - x0) * i / (n - 1)
@@ -1076,8 +1114,12 @@ def motes(c, t, alpha=1.0, count=46, color=(150, 190, 230)):
         c.disc((x, y), s, color, al)
 
 
-def section(c, t, num, title, sub=None, accent=CYAN, appear=0.0, x=112.0, y=96.0):
-    """左上角章节标签, 编号 + 标题 + 扫出的强调线"""
+def section(c, t, num, title, sub=None, accent=CYAN, appear=0.0, x=None, y=None):
+    """左上角章节标签, 编号 + 标题 + 扫出的强调线; 坐标缺省由画幅短边派生"""
+    if x is None:
+        x = float(margin_px())
+    if y is None:
+        y = round(min(W, H) * 96.0 / 1080.0)
     lb = (t - appear) / BEAT
     a = beat_on(lb, 0.0, 0.5)
     if a <= 0.004:
@@ -1092,18 +1134,24 @@ def section(c, t, num, title, sub=None, accent=CYAN, appear=0.0, x=112.0, y=96.0
         c.text((x + 74 + xo, y + 64), sub, 22, DIM, a * sa, anchor="lm", kind="monor")
 
 
-def caption(c, lb, k, text, color=WHITE, size=36, y=900.0, alpha=1.0, kind="cnb"):
-    """底部字幕, 第 k 拍入场"""
+def caption(c, lb, k, text, color=WHITE, size=36, y=None, alpha=1.0, kind="cnb"):
+    """底部字幕, 第 k 拍入场; y 缺省由画幅派生"""
     a = beat_on(lb, k, 0.5) * alpha
     if a <= 0.004:
         return
-    c.text((W / 2, y), text, size, color, a, anchor="mm", kind=kind)
+    c.text((W / 2, caption_y() if y is None else y), text, size, color, a, anchor="mm", kind=kind)
 
 
-def progress_footer(c, t, alpha=1.0, label=None, y=1046.0, x0=112.0, x1=1808.0):
-    """底部进度线 + 四拍指示灯, 让观众随时知道处在哪一拍"""
+def progress_footer(c, t, alpha=1.0, label=None, y=None, x0=None, x1=None):
+    """底部进度线 + 四拍指示灯, 让观众随时知道处在哪一拍; 坐标缺省由画幅派生"""
     if alpha <= 0.01:
         return
+    if y is None:
+        y = footer_y()
+    if x0 is None:
+        x0 = float(margin_px())
+    if x1 is None:
+        x1 = W - margin_px()
     p = clamp(t / DUR)
     c.line((x0, y), (x1, y), EDGE, 2.0, 0.55 * alpha)
     c.gline((x0, y), (x0 + (x1 - x0) * p, y), CYAN, 2.4, 0.85 * alpha, glow=0.7)

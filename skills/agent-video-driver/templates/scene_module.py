@@ -47,11 +47,14 @@ try:
 except ImportError:
     resources = None
 
-# ----------------------------------------------------------------- 时间栅格
+# ----------------------------------------------------------------- 时间栅格与画幅
 # 画面切点必须与配乐切点完全一致, 两者都从这里取值
 BPM = 100.0
 DUR = 108.0
-cv.configure(BPM=BPM, DUR=DUR, FRAMES=os.path.join("temp", "frames_proj"))
+# 画幅: 16:9 是 1920x1080, 9:16 是 1080x1920, 1:1 是 1080x1080, 也可以给自定义偶数宽高;
+# configure 覆盖 W/H 时数学原点 OX/OY 自动落到新画幅中点, 布局组件按短边比例重排
+W, H = 1920, 1080
+cv.configure(BPM=BPM, DUR=DUR, W=W, H=H, FRAMES=os.path.join("temp", "frames_proj"))
 BEAT, BAR = cv.BEAT, cv.BAR
 
 SEG = [k * BAR for k in (0, 3, 7, 11, 15, 21, 27, 33, 38, 43, 45)]

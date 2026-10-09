@@ -308,13 +308,22 @@ class ResourceReport:
     """
 
     def __init__(self, scope="all", frames=None, out_dir=None, audio=None,
-                 sample=1.0, force=False):
+                 sample=1.0, force=False, aspect=None):
         self.scope = scope
         self.frames = frames
         self.out_dir = out_dir or os.getcwd()
         self.audio = audio
         self.sample = sample
         self.force = force
+        # 画幅折算系数: 预估基准是 1920x1080, 自定义画幅按面积比例放大或缩小
+        # 三档预设 (16:9, 9:16, 1:1) 的面积与基准相同, 系数恒为 1
+        self.aspect_k = 1.0
+        if aspect:
+            try:
+                w, h = str(aspect).lower().replace("*", "x").split("x")
+                self.aspect_k = max(0.01, (float(w) * float(h)) / (1920.0 * 1080.0))
+            except Exception:
+                self.warnings.append("画幅 %r 解析不了, 预估按 1920x1080 基准算" % (aspect,))
         self.reasons = []
         self.warnings = []
         self.blocked = False
@@ -379,12 +388,12 @@ class ResourceReport:
         }
 
     def estimate_need_gb(self):
-        """帧序列按 PNG 估, 成片按每 30 秒 15MB 估, 音频按实际体积算, 三者求和再乘安全系数"""
+        """帧序列按 PNG 估, 成片按每 30 秒 15MB 估, 音频按实际体积算, 三者求和再乘安全系数; 按画幅面积折算"""
         if self.frames is None:
             self.warnings.append("未给 --frames, 跳过磁盘占用预估, 也就不会因磁盘判定拦截")
             return None
-        png_mb = float(self.frames) * FRAME_PNG_MB
-        out_mb = (float(self.frames) / VIDEO_FPS / 30.0) * OUT_MB_PER_30S
+        png_mb = float(self.frames) * FRAME_PNG_MB * self.aspect_k
+        out_mb = (float(self.frames) / VIDEO_FPS / 30.0) * OUT_MB_PER_30S * self.aspect_k
         audio_mb = 0.0
         if self.audio:
             try:
@@ -393,8 +402,9 @@ class ResourceReport:
                 self.warnings.append("音频 %s 取不到体积 (%s), 未计入磁盘预估"
                                      % (self.audio, str(e)[:60]))
         need_mb = (png_mb + out_mb + audio_mb) * DISK_SAFETY
-        self.need_detail = ("帧 %d x %.2f MB + 成片 %.1f MB + 音频 %.1f MB, 安全系数 %.1f"
-                            % (self.frames, FRAME_PNG_MB, out_mb, audio_mb, DISK_SAFETY))
+        self.need_detail = ("帧 %d x %.2f MB (画幅系数 %.2f) + 成片 %.1f MB + 音频 %.1f MB, 安全系数 %.1f"
+                            % (self.frames, FRAME_PNG_MB * self.aspect_k, self.aspect_k,
+                               out_mb, audio_mb, DISK_SAFETY))
         return need_mb / 1024.0
 
     def probe_disk(self):
@@ -616,6 +626,8 @@ def build_parser():
     p.add_argument("--out-dir", dest="out_dir", default=None,
                    help="产物目录, 用于查该盘的剩余空间, 缺省当前工作目录")
     p.add_argument("--audio", default=None, help="配乐或混音 WAV 路径, 计入磁盘预估")
+    p.add_argument("--aspect", default=None,
+                   help="画幅 WxH, 用于把体积预估按面积折算; 缺省按 1920x1080 基准, 三档预设面积为 1 不用传")
     p.add_argument("--json", dest="json_path", default=None, help="把结果写成 JSON 的路径")
     p.add_argument("--sample", type=float, default=1.0, help="CPU 负载采样时长秒数, 缺省 1.0")
     p.add_argument("--force", action="store_true",
@@ -643,7 +655,8 @@ def main(argv=None):
     if args.sample <= 0:
         parser.error("--sample 必须大于 0")
     rep = ResourceReport(scope=args.scope, frames=args.frames, out_dir=args.out_dir,
-                         audio=args.audio, sample=args.sample, force=args.force)
+                         audio=args.audio, sample=args.sample, force=args.force,
+                         aspect=args.aspect)
     print(rep.format_text())
     if args.json_path:
         write_json(args.json_path, rep.to_dict())
