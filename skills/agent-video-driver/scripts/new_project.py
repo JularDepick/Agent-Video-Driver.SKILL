@@ -3,7 +3,8 @@
 起一个新的视频工程: 建目录结构, 把技能脚本复制成自包含副本, 生成四份骨架
 
 手工照抄 templates 容易漏文件, 也容易把顶部常量改错一处; 这个脚本把这几步一次做完,
-并把 BPM, 时长, 帧率, 帧目录前缀写进复制出来的场景模块顶部.
+并把 BPM, 时长, 帧率, 画幅, 帧目录前缀写进工程根的 theme.py (唯一配置源),
+场景模块顶部的同名回退常量也写同一批值, 于是删掉 theme.py 后工程仍与命令行一致.
 
   python scripts/new_project.py ..\\my-video --bpm 100 --dur 108 --prefix nobel
   python scripts/new_project.py ..\\my-video --bpm 120 --dur 30 --prefix teaser --style neon-hud
@@ -83,30 +84,16 @@ def resolve_aspect(args):
     return None
 
 
-def patch_scene_module(text, bpm, dur, fps, prefix, wh=None):
+def seg_tables(bpm, dur):
     """
-    改写复制出来的场景模块顶部常量
+    按 BPM 与片长推出整小节数与演示段边界
 
-    每一处替换都要命中, 命中不了就直接报错: 模板改了名字而这里没跟着改,
-    静默产出一个 BPM 不对的工程比报错难查得多.
+    返回 (整小节数, 演示段数, 段边界字面量); 段数不能超过实际小节数:
+    5 秒的片子只有 2 小节, 硬凑三段会让段表越过片长, 于是末段倒着走,
+    渲染出来是空段或截断段
     """
-    subs = [
-        (r"(?m)^BPM = .*$", "BPM = %s" % bpm, "BPM 常量"),
-        (r"(?m)^DUR = .*$", "DUR = %s" % dur, "DUR 常量"),
-        (r'FRAMES=os\.path\.join\("temp", "[^"]*"\)',
-         'FRAMES=os.path.join("temp", "frames_%s")' % prefix, "FRAMES 前缀"),
-    ]
-    if wh is not None:
-        subs.append((r"(?m)^W, H = .*$", "W, H = %d, %d" % wh, "画幅常量"))
-    for pat, rep, name in subs:
-        text, n = re.subn(pat, rep, text, count=1)
-        if n != 1:
-            raise RuntimeError("模板里找不到 %s, 先确认 templates/scene_module.py 是否改过" % name)
-
     bar = 4 * 60.0 / float(bpm)
     bars = max(1, int(round(float(dur) / bar)))
-    # 演示段数不能超过实际小节数: 5 秒的片子只有 2 小节, 硬凑三段会让段表越过片长,
-    # 于是末段倒着走, 渲染出来是空段或截断段
     n_seg = max(1, min(3, bars))
     ks = sorted({min(bars, int(round(bars * i / float(n_seg)))) for i in range(n_seg + 1)})
     ks = [k for i, k in enumerate(ks) if i == 0 or k > ks[i - 1]]
@@ -117,36 +104,78 @@ def patch_scene_module(text, bpm, dur, fps, prefix, wh=None):
     seg = [round(min(float(dur), k * bar), 3) for k in ks[:-1]] + [round(float(dur), 3)]
     if not all(seg[i + 1] > seg[i] for i in range(len(seg) - 1)):
         raise RuntimeError("按 %.1f 秒与 %.1f BPM 推不出可用的演示段边界: %s" % (dur, bpm, seg))
+    return bars, n_seg, "[%s]" % ", ".join("%.3f" % v for v in seg)
 
-    seg_text = "[%s]" % ", ".join("%.3f" % v for v in seg)
-    text, n = re.subn(r"(?m)^SEG = \[k \* BAR for k in \([^)]*\)\]$",
-                      "SEG = %s" % seg_text, text, count=1)
-    if n != 1:
-        raise RuntimeError("模板里找不到 SEG 常量, 先确认 templates/scene_module.py 是否改过")
-    text, n = re.subn(r"(?m)^SEG_OF_DEMO = \[.*\]$",
-                      "SEG_OF_DEMO = %s" % seg_text, text, count=1)
-    if n != 1:
-        raise RuntimeError("模板里找不到 SEG_OF_DEMO 常量, 先确认 templates/scene_module.py 是否改过")
+
+def patch_input_constants(text, bpm, dur, fps, prefix, wh=None, what="templates/scene_module.py"):
+    """
+    改写 input 常量: BPM, DUR, FPS, 帧目录前缀, 画幅
+
+    theme.py 与场景模块的回退常量同名同写法, 所以两处共用这一段
+    每一处替换都要命中, 命中不了就直接报错: 模板改了名字而这里没跟着改,
+    静默产出一个 BPM 不对的工程比报错难查得多
+    """
+    subs = [
+        (r"(?m)^BPM = .*$", "BPM = %s" % bpm, "BPM 常量"),
+        (r"(?m)^DUR = .*$", "DUR = %s" % dur, "DUR 常量"),
+        (r"(?m)^FPS = .*$", "FPS = %d" % fps, "FPS 常量"),
+        (r"(?m)^FRAME_PREFIX = .*$", 'FRAME_PREFIX = "%s"' % prefix, "FRAME_PREFIX 常量"),
+    ]
+    if wh is not None:
+        subs.append((r"(?m)^W, H = .*$", "W, H = %d, %d" % wh, "画幅常量"))
+    for pat, rep, name in subs:
+        text, n = re.subn(pat, rep, text, count=1)
+        if n != 1:
+            raise RuntimeError("模板里找不到 %s, 先确认 %s 是否改过" % (name, what))
+    return text
+
+
+def patch_seg_tables(text, seg_text, n_seg, what):
+    """
+    改写段落表三处: SEG, SEG_OF_DEMO, SCREEN_COUNT
+
+    新工程的每一幕按一屏起步, 幕内确实有多屏时由写场景的人改这个表, 或让 plan.json 接管
+    """
+    subs = [
+        (r"(?m)^SEG = \[k \* BAR for k in \([^)]*\)\]$", "SEG = %s" % seg_text, "SEG 常量"),
+        (r"(?m)^SEG_OF_DEMO = \[.*\]$", "SEG_OF_DEMO = %s" % seg_text, "SEG_OF_DEMO 常量"),
+        (r"(?m)^SCREEN_COUNT = \[.*\]$",
+         "SCREEN_COUNT = [%s]" % ", ".join(["1"] * max(1, n_seg)), "SCREEN_COUNT 常量"),
+    ]
+    for pat, rep, name in subs:
+        text, n = re.subn(pat, rep, text, count=1)
+        if n != 1:
+            raise RuntimeError("模板里找不到 %s, 先确认 %s 是否改过" % (name, what))
+    return text
+
+
+def patch_theme(text, bpm, dur, fps, prefix, wh=None):
+    """
+    改写 theme.py: 生成工程后它是唯一要改的配置处
+
+    只写输入常量与段落表, BEAT, BAR, BARS, NFRAMES 这些派生量留在文件里自己算
+    """
+    text = patch_input_constants(text, bpm, dur, fps, prefix, wh, "templates/theme.py")
+    bars, n_seg, seg_text = seg_tables(bpm, dur)
+    text = patch_seg_tables(text, seg_text, n_seg, "templates/theme.py")
+    return text, bars, n_seg
+
+
+def patch_scene_module(text, bpm, dur, fps, prefix, wh=None):
+    """
+    改写复制出来的场景模块顶部的回退常量
+
+    theme.py 才是唯一配置源, 这批常量只在没有 theme.py 时生效; 两处写同一批值,
+    于是删掉 theme.py 后工程仍与命令行一致
+    """
+    text = patch_input_constants(text, bpm, dur, fps, prefix, wh)
+    bars, n_seg, seg_text = seg_tables(bpm, dur)
+    text = patch_seg_tables(text, seg_text, n_seg, "templates/scene_module.py")
     text, n = re.subn(r"(?m)^SCENES = \[.*\]$",
                       "SCENES = [%s]" % ", ".join(["s_title", "s_chart", "s_chart"][:n_seg]),
                       text, count=1)
     if n != 1:
         raise RuntimeError("模板里找不到 SCENES 常量, 先确认 templates/scene_module.py 是否改过")
-    # 新工程的每幕按一屏起步, 幕内确实有多屏时由写场景的人改这个表, 或让 plan.json 接管
-    text, n = re.subn(r"(?m)^SCREEN_COUNT = \[.*\]$",
-                      "SCREEN_COUNT = [%s]" % ", ".join(["1"] * max(1, n_seg)),
-                      text, count=1)
-    if n != 1:
-        raise RuntimeError("模板里找不到 SCREEN_COUNT 常量, 先确认 templates/scene_module.py 是否改过")
-
-    # 帧率, 画布与帧目录也在顶部一次定下来, 免得后面靠默认值猜
-    # 模板的 configure 行固定带 W=W, H=H (画幅由顶部常量给), 这里只把 FPS 与帧目录插进去
-    pat = (r'cv\.configure\(BPM=BPM, DUR=DUR, W=W, H=H, FRAMES=os\.path\.join\("temp", "[^"]*"\)\)')
-    rep = ("cv.configure(BPM=BPM, DUR=DUR, W=W, H=H, FPS=%d, "
-           "FRAMES=os.path.join(\"temp\", \"frames_%s\"))" % (fps, prefix))
-    text, n = re.subn(pat, rep, text, count=1)
-    if n != 1:
-        raise RuntimeError("模板里找不到 cv.configure 那一行, 先确认 templates/scene_module.py 是否改过")
     return text, bars, n_seg
 
 
@@ -238,6 +267,28 @@ def main():
     n = copy_scripts(os.path.join(project, "scripts"))
     print("复制脚本 %d 个 -> scripts/" % n)
 
+    # theme.py 是唯一配置源, 先落它: BPM 与片长从这里进工程
+    theme_src = os.path.join(TEMPLATES, "theme.py")
+    if os.path.exists(theme_src):
+        with open(theme_src, encoding="utf-8") as f:
+            theme_text = f.read()
+        try:
+            theme_text, bars, n_seg = patch_theme(theme_text, a.bpm, a.dur, a.fps, prefix, wh)
+        except RuntimeError as e:
+            print(str(e))
+            return 2
+        with open(os.path.join(project, "theme.py"), "w", encoding="utf-8",
+                  newline="\n") as f:
+            f.write(theme_text)
+        if wh is not None:
+            print("theme.py: 唯一要改的配置处, 写入 BPM %s, 时长 %s 秒, %d fps, 画幅 %dx%d, "
+                  "帧目录前缀 %s" % (a.bpm, a.dur, a.fps, wh[0], wh[1], prefix))
+        else:
+            print("theme.py: 唯一要改的配置处, 写入 BPM %s, 时长 %s 秒, %d fps, "
+                  "画幅取模板缺省 1920x1080, 帧目录前缀 %s" % (a.bpm, a.dur, a.fps, prefix))
+    else:
+        print("提示: 模板缺 theme.py, 已跳过(配置只能改 scene_module.py 顶部的常量)")
+
     src = os.path.join(TEMPLATES, "scene_module.py")
     with open(src, encoding="utf-8") as f:
         text = f.read()
@@ -259,6 +310,8 @@ def main():
         ("brief.md", os.path.join("prompts", "brief.md")),
         ("stage-prompt.md", os.path.join("prompts", "stage-prompt.md")),
         ("requirements.md", os.path.join("prompts", "requirements.md")),
+        ("coverage.md", os.path.join("prompts", "coverage.md")),
+        ("style-and-score.md", os.path.join("prompts", "style-and-score.md")),
         ("screen-script.md", "script.md"),
         ("storyboard.md", "storyboard.md"),
     ]
@@ -270,19 +323,26 @@ def main():
         shutil.copy2(s, os.path.join(project, dst_rel))
     with open(os.path.join(project, "credits.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(CREDITS_SKELETON)
-    print("骨架: prompts/brief.md, prompts/stage-prompt.md, prompts/requirements.md, script.md, storyboard.md, credits.md")
+    print("骨架: prompts/brief.md, prompts/stage-prompt.md, prompts/requirements.md (立项单), "
+          "prompts/coverage.md (覆盖度与结构单), prompts/style-and-score.md (风格与配乐单), "
+          "script.md, storyboard.md, credits.md")
+    print("配置唯一入口: theme.py (身份与署名, 时间网格, 画幅, 色板, 字体与字号, 段落与幕表), "
+          "改片只改这一处; scene_module.py 顶部的同名常量只是它的回退")
 
     write_style(project, a.style, a.seed, a.tone)
 
     print("-" * 62)
     print("工程已建好: %s" % project)
     print("接下来按这个顺序走:")
-    print("  1 填 prompts/brief.md 与 prompts/stage-prompt.md")
-    print("  2 写 script.md, 再跑 python scripts/timing.py script.md --bpm %s --bars %d" % (a.bpm, bars))
-    print("  3 填 storyboard.md, 过启动确认门")
-    print("  4 python scripts/orchestra.py %s %s score.wav \"<切点>\" audio" % (a.dur, a.bpm))
-    print("  5 改 scene_module.py 的分镜, 用 python scene_module.py at 0:1.5 逐场审阅")
-    print("  6 python scene_module.py segments 核对段数, 再走合成确认门")
+    print("  1 填 prompts/requirements.md (立项单), 与代价披露同一次问完")
+    print("  2 填 prompts/brief.md 与 prompts/stage-prompt.md")
+    print("  3 研究与核查后填 prompts/coverage.md, 用户挑定覆盖方案")
+    print("  4 写 script.md, 再跑 python scripts/timing.py script.md --bpm %s --bars %d" % (a.bpm, bars))
+    print("  5 取三张风格候选 (python scripts/style_lottery.py --pick 3 --write .) 并出三张样图, 填 prompts/style-and-score.md")
+    print("  6 填 storyboard.md, 过启动确认门")
+    print("  7 python scripts/orchestra.py %s %s score.wav \"<切点>\" audio" % (a.dur, a.bpm))
+    print("  8 改 theme.py 的配置与 scene_module.py 的分镜, 用 python scene_module.py at 0:1.5 逐场审阅")
+    print("  9 python scene_module.py segments 核对段数, 再走合成确认门")
     return 0
 
 

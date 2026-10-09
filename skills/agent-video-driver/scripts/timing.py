@@ -3,6 +3,7 @@
 文案到拍表排程器: 把一屏一句的文案排到音乐拍网格上
 
   python scripts/timing.py script.md --bpm 100 --bars 45 --anchor 8:21 --json temp/plan.json --md temp/plan.md
+  python scripts/timing.py script.md --bpm 100 --bars "5-21,14-30,75-end" --anchor 8:21 --source-bars 96
   python scripts/timing.py script.md --bpm 120 --meter 4 --fix 6:5 --fix 11:3
 
 输入格式 (只认二级标题与含 2 列以上的表格行, 其余行忽略, 所以容错):
@@ -24,10 +25,31 @@
   人看的小节号一律 1 基: --anchor 的小节号与 plan.md 的 视频小节.拍 都从 1 开始
   机器读的小节号一律 0 基: plan.json 的 bar 与 beat_in_bar 从 0 开始, 与 beats.json 对齐
 
+小节播放表 (--bars 的第二种形式):
+  一个整数就是音乐总小节数, 与从前完全一致; 写成 a / a-b / a-end, 或者一串这样的区间,
+  就是小节播放表, 解析规则与 scripts/cutmusic.py 的 parse_bars 对齐 (一律 1 基两端都含),
+  逗号与空格都作分隔, 顺序即播放顺序, 同一段可以重复出现表示重复播放:
+    --bars "5-21,14-30,75-end"   三段依次播放, 末段播到原曲结尾
+    --bars 5-21 14-30 75-end     与上面的写法等价 (本参数会吃掉紧随其后的空格分隔值,
+                                 所以文案表路径要写在最前面)
+  同一份播放表既是 cutmusic.py 的输入也是排程的输入, 剪出来的音乐因此与排程逐小节对齐,
+  剪过之后 --anchor 仍然指得回原曲: 给了播放表时 --anchor 的小节号是原曲小节号, 取它在
+  播放表里的首次出现位置换算成视频小节, 找不到就停下报错并列出播放表覆盖的原曲区间
+  end 的两种解释: 给了 --source-bars N 就与 cutmusic.py 完全一致 (剪到原曲第 N 小节);
+  没给则当开放尾段, 长度由排程所需决定 (最少 1 小节), 开放尾段只能写在播放表最后一段
+  边界: 起点大于终点 (倒序) 直接报错; 越界只有给了 --source-bars 才能校验; 区间之间重叠
+  是允许的, 它表示同一段原曲被播两次, 不是错误; 单独一个整数一律按总小节数解释, 要表达
+  只播一小节请写 45-45
+
+plan.json 新增字段 (既有字段一律保留且语义不变, 小节号 0 基):
+  bars_plan: 归一化后的播放表 [{video_bar, source_bar, bars, open}, ...]; 整数 --bars 时写 null
+  source_bars: 视频小节号到原曲小节号的逐小节映射, 长度等于 bars; 整数 --bars 时是一一对应
+  每幕新增 src_bar (该幕首屏起点的原曲小节号), 每屏新增 src_bar 与 src_beat_in_bar
+
 排程规则:
   1 每幕首屏必须落在小节线 (下拍) 上, 幕内屏按公式拍数依次紧排
   2 幕尾自动补齐到整小节, 保证下一幕首屏仍在小节线上
-  3 被 --anchor 钉住的屏落在指定小节的下拍上 (小节号从 1 开始), 可重复传
+  3 被 --anchor 钉住的屏落在指定小节的下拍上 (小节号从 1 开始, 给了播放表时是原曲小节号), 可重复传
   4 --fix 屏号:拍数 覆盖某屏的公式拍数, 可重复传 (公式见下)
   5 余量摊到全部合格屏上, 不是只摊首末屏: 先按幕的屏数降序排幕, 幕内按 首屏, 末屏,
      其余屏按原顺序 排列, 再按这个顺序每次一个小节 (meter 拍) 逐个轮流分配
@@ -43,7 +65,11 @@
   6 文案量撑不起音乐长度时打印醒目告警: 判据是合格屏平均每屏分到的额外时长
      超过 2 小节 (2 * bar); 告警给出内容所需小节, 音乐小节, 余量多少小节多少秒,
      平均每屏多出多少秒, 以及 增加屏数 / 用 --bars 缩短音乐 / 接受长停留 三条解决路径
-  7 排不下时停下来报清缺口 (需要多少小节, 音乐只剩多少小节, 缺多少秒) 并给出三条解决路径
+  7 排不下时停下来报清缺口 (需要多少小节, 音乐只剩多少小节, 缺多少秒) 并给出三条解决路径:
+    精简文案, 把总小节数调大, 回头剪音乐 (先用 scripts/loops.py 找可无缝重复或可剪掉的小节
+    区间, 再用 scripts/cutmusic.py 按播放表重剪), 第三条打印成可直接复制执行的命令
+  8 打印播放表与锚点的换算结果 (视频小节对应哪一原曲小节, 锚点落在哪个视频小节), 排程所需
+    与播放表总长的差额, 供 Agent 核对剪过的音乐与排程是否互指
 
 拍数公式: units = 中文字符数 + 拉丁与数字词数, beats = max(3, round((0.6 + units/6) / BEAT + 0.2))
 """
@@ -58,6 +84,12 @@ CN = re.compile(r"[\u4e00-\u9fff]")
 LATIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.\-]*")
 SEP_ROW = re.compile(r"^:?-{2,}:?$")
 HEADER_CELLS = ("屏文字", "文字", "文案", "屏文案", "字幕", "屏幕文字")
+BARS_SPLIT = re.compile(r"[,\s]+")
+BARS_ITEM = re.compile(r"^([0-9]+)(?:-(end|[0-9]+))?$")
+
+
+class BarsError(Exception):
+    """小节播放表的写法或范围不合法, 由 main 捕获后打印并返回 2"""
 
 
 def parse_script(path):
@@ -111,6 +143,129 @@ def parse_pairs(items, flag):
     return out
 
 
+def parse_bars_spec(tokens):
+    """拆 --bars 的原始参数, 逗号与空格都作分隔, 容许写成 a-b / a-end / a / 一个总小节数整数.
+    返回 (总小节数, None) 或 (None, 规格列表); 规格元素是 (起, 止 或 None), 都是 1 基.
+    解析规则与 scripts/cutmusic.py 的 parse_bars 对齐 (两端都含), 只是在拿到源曲总小节数
+    之前先不校验上界, end 也先留成 None. 完全没给 --bars 时返回 (None, None)"""
+    if not tokens:
+        return None, None
+    specs = []
+    for tok in tokens or []:
+        for sp in BARS_SPLIT.split(tok.strip()):
+            if sp:
+                specs.append(sp)
+    if not specs:
+        raise BarsError("--bars 没有给出内容")
+    if len(specs) == 1 and specs[0].isdigit():
+        n = int(specs[0])
+        if n < 1:
+            raise BarsError("--bars 至少为 1")
+        return n, None
+    out = []
+    for sp in specs:
+        m = BARS_ITEM.match(sp.lower())
+        if not m:
+            raise BarsError("小节播放表写法不对: %s, 每一项应当是 a / a-b / a-end (整份写一个整数就是总小节数)" % sp)
+        i = int(m.group(1))
+        tail = m.group(2)
+        if i < 1:
+            raise BarsError("小节号从 1 开始: %s" % sp)
+        if tail is None:
+            out.append((i, i))
+        elif tail == "end":
+            out.append((i, None))
+        else:
+            j = int(tail)
+            if j < i:
+                raise BarsError("播放表里的区间倒序: %s, 起点不能大于终点" % sp)
+            out.append((i, j))
+    return None, out
+
+
+def build_play(specs, source_total):
+    """把播放表规格归一化成片段列表, 返回 (片段列表, 固定总小节数, 开放尾段起点 或 None).
+    片段元素是 (视频起 0 基, 原曲起 0 基, 长度 或 None). 给了源曲总小节数时 end 与
+    cutmusic.py 完全一致地解析成定长; 没给则当开放尾段 (长度由排程所需定), 只能写在最后一段"""
+    segs = []
+    fixed = 0
+    for k, (i, j) in enumerate(specs):
+        is_end = j is None
+        if j is None:
+            if source_total is None:
+                if k != len(specs) - 1:
+                    raise BarsError("end 只能写在播放表最后一段; 要把它放在中间, 请用 --source-bars 给出原曲总小节数")
+                segs.append((fixed, i - 1, None))
+                return segs, fixed, i - 1
+            j = source_total
+        if source_total is not None and (i > source_total or j > source_total):
+            if is_end:
+                raise BarsError("end 的起点 %d 超过 --source-bars 给的 %d" % (i, source_total))
+            raise BarsError("小节范围越界: %d-%d, 原曲可用范围是 1 到 %d" % (i, j, source_total))
+        segs.append((fixed, i - 1, j - i + 1))
+        fixed += j - i + 1
+    return segs, fixed, None
+
+
+def plan_parts(segs):
+    """播放表的文本形式, 每段一项, 开放尾段写成 a-end"""
+    out = []
+    for _, s0, n in segs:
+        if n is None:
+            out.append("%d-end" % (s0 + 1))
+        elif n == 1:
+            out.append("%d" % (s0 + 1))
+        else:
+            out.append("%d-%d" % (s0 + 1, s0 + n))
+    return out
+
+
+def src_to_video(segs, src_bar):
+    """原曲小节号 (0 基) 在播放表里的首次出现位置, 返回视频小节号 (0 基); 找不到返回 None"""
+    for v0, s0, n in segs:
+        if n is None:
+            if src_bar >= s0:
+                return v0 + (src_bar - s0)
+        elif s0 <= src_bar < s0 + n:
+            return v0 + (src_bar - s0)
+    return None
+
+
+def video_to_src(segs, total):
+    """视频小节号 (0 基) 到原曲小节号 (0 基) 的逐小节映射, 长度等于 total"""
+    out = []
+    for v0, s0, n in segs:
+        cnt = (total - v0) if n is None else n
+        out.extend(s0 + k for k in range(max(cnt, 0)))
+    return out
+
+
+def bars_plan_of(segs, total):
+    """bars_plan 的 json 形式, 小节号 0 基, open 标记这一段是不是开放尾段"""
+    out = []
+    for v0, s0, n in segs:
+        out.append({"video_bar": v0, "source_bar": s0,
+                    "bars": (total - v0) if n is None else n, "open": n is None})
+    return out
+
+
+def music_cut_cmd(segs, music_bars, miss):
+    """缺口处置的第三条: 回头剪音乐, 打印成可直接复制执行的命令.
+    空缺的只有 loops.py 报出的可重复区间, 缺口小节数已经代进 --len"""
+    parts = plan_parts(segs) if segs is not None else ["1-%d" % music_bars]
+    # 开放尾段必须留在最后, 所以重复区间插在它前面
+    if segs is not None and segs[-1][2] is None:
+        parts = parts[:-1] + ["<loops.py 报出的可重复区间>"] + parts[-1:]
+    else:
+        parts = parts + ["<loops.py 报出的可重复区间>"]
+    return ["     python scripts/beats.py audio/score.wav --json temp/beats.json --bpm <BPM>",
+            "     python scripts/loops.py audio/score.wav temp/beats.json --len %d %d" % (miss, miss),
+            "     python scripts/cutmusic.py audio/score.wav temp/beats.json --bars \"%s\" -o audio/score-edit.wav"
+            % ",".join(parts),
+            "     原曲换成用户自备音乐就改上面的音频路径; 剪完对 audio/score-edit.wav 再跑一次",
+            "     beats.py 复测拍表, 用新播放表重排本表"]
+
+
 def resolve(ref, screens):
     """屏号优先按全局连续编号解释, 其次按表内屏号唯一匹配"""
     if 1 <= ref <= len(screens):
@@ -119,8 +274,8 @@ def resolve(ref, screens):
     return hits[0] if len(hits) == 1 else None
 
 
-def report_shortage(screens, music_bars, meter, bar_sec, beat):
-    """排不下时的缺口报告, 并给出三条解决路径"""
+def report_shortage(screens, music_bars, meter, bar_sec, beat, segs=None):
+    """排不下时的缺口报告, 并给出三条解决路径: 精简文案, 调大总小节数, 回头剪音乐"""
     last = len(screens) - 1
     first_bad = last
     for i, s in enumerate(screens):
@@ -133,16 +288,26 @@ def report_shortage(screens, music_bars, meter, bar_sec, beat):
     miss = max(need - avail, 1)
     cnt = last - first_bad + 1
     rng = "第 %d 屏" % (first_bad + 1) if cnt == 1 else "第 %d 到 %d 屏" % (first_bad + 1, last + 1)
+    per = need / float(max(cnt, 1))
+    drop = int(math.ceil(miss / max(per, 1e-9)))
     print("排不下: %s需要 %d 小节, 但音乐在这里只剩 %d 小节: 缺 %d 小节 (%.1f 秒)"
           % (rng, need, avail, miss, miss * bar_sec))
     print("缺口从第 %d 小节开始, 音乐共 %d 小节" % (b0 + 1, music_bars))
     print("解决路径:")
-    print("  1 精简文案: 把这 %d 屏里偏长的几屏压短, 每屏少 1 拍约省 %.1f 秒" % (cnt, beat))
-    per = need / float(max(cnt, 1))
-    print("  2 减少屏数: 从这 %d 屏里删掉或合并 %d 屏 (按平均每屏 %.1f 小节算), 可省出 %d 小节"
-          % (cnt, int(math.ceil(miss / max(per, 1e-9))), per, miss))
-    print("  3 把总小节数调大: --bars 从 %d 提到 %d, 同时把配乐时长延长 %.1f 秒"
-          % (music_bars, music_bars + miss, miss * bar_sec))
+    print("  1 精简文案: 把这 %d 屏里偏长的几屏压短, 每屏少 1 拍约省 %.1f 秒; 也可从这 %d 屏里删掉或合并"
+          % (cnt, beat, cnt))
+    print("     %d 屏 (按平均每屏 %.1f 小节算), 可省出 %d 小节" % (drop, per, miss))
+    if segs is None:
+        print("  2 把总小节数调大: --bars 从 %d 提到 %d, 同时把配乐时长延长 %.1f 秒"
+              % (music_bars, music_bars + miss, miss * bar_sec))
+    else:
+        print("  2 把总小节数调大: 改用整数 --bars %d (现在是 %d 小节的播放表), 音乐时长延长 %.1f 秒"
+              % (music_bars + miss, music_bars, miss * bar_sec))
+    print("  3 回头剪音乐: 先用 loops.py 找一段至少 %d 小节 (%.1f 秒) 的可无缝重复区间重复播放,"
+          % (miss, miss * bar_sec))
+    print("     或找可剪接点剪掉一段并把后面的提前, 让配乐多出这 %d 小节, 文案与屏数都不用动:" % miss)
+    for line in music_cut_cmd(segs, music_bars, miss):
+        print(line)
 
 
 def rebase(screens, lead):
@@ -260,7 +425,7 @@ def fill_rest(screens, scenes, free_start, music_bars, meter, lead):
     return rebase(screens, lead)
 
 
-def warn_thin_content(targets, extra, content_bars, music_bars, meter, beat, bar):
+def warn_thin_content(targets, extra, content_bars, music_bars, meter, beat, bar, segs=None):
     """文案量撑不起音乐长度时的醒目告警, 没有告警时返回 False.
     判据: 合格屏平均每屏分到的额外时长超过 2 小节 (2 * bar), 即平均要多停两小节以上"""
     if extra <= 0:
@@ -281,8 +446,12 @@ def warn_thin_content(targets, extra, content_bars, music_bars, meter, beat, bar
     print("解决路径:")
     print("  1 增加屏数: 每屏最多多吃 2 小节的话合格屏要有 %d 屏, 还差 %d 屏"
           % (need, max(need - n, 0)))
-    print("  2 用 --bars 把音乐缩短到接近内容所需: --bars 从 %d 改成 %d"
-          % (music_bars, content_bars))
+    if segs is None:
+        print("  2 用 --bars 把音乐缩短到接近内容所需: --bars 从 %d 改成 %d"
+              % (music_bars, content_bars))
+    else:
+        print("  2 把播放表缩短到接近内容所需 (%d 小节): 只留下前 %d 小节对应的区间, 或用 --source-bars 收紧 end 尾段"
+              % (content_bars, content_bars))
     print("  3 接受这些屏的停留时间变长: 但必须自行确认没有违反 纯静态段落不超过 2 秒")
     return True
 
@@ -312,10 +481,18 @@ def main():
     ap = argparse.ArgumentParser(description="把一屏一句的文案排到音乐拍网格上, 产出 plan.json 与 plan.md")
     ap.add_argument("script", help="文案表 markdown 路径")
     ap.add_argument("--bpm", type=float, default=100.0, help="配乐 BPM, 拍表唯一来源")
-    ap.add_argument("--bars", type=int, default=None, help="音乐总小节数, 不给就按内容所需定")
+    ap.add_argument("--bars", nargs="+", default=None, metavar="N|RANGE",
+                    help="音乐总小节数写一个整数, 或者写与 cutmusic.py 同语法的小节播放表: "
+                         "a / a-b / a-end, 逗号与空格都作分隔, 顺序即播放顺序且可重复, "
+                         "例如 \"5-21,14-30,75-end\"; 本参数会吃掉紧随其后的空格分隔值, "
+                         "所以文案表路径要写在最前面. 不给就按内容所需定")
+    ap.add_argument("--source-bars", dest="source_bars", type=int, default=None,
+                    help="原曲总小节数, 只用于把播放表里的 end 解析成定长 (与 cutmusic.py 一致) "
+                         "并校验越界; 不给时 end 是开放尾段, 长度由排程所需决定")
     ap.add_argument("--meter", type=int, default=4, help="每小节拍数")
     ap.add_argument("--anchor", action="append", default=None,
-                    help="屏号:小节号, 小节号从 1 开始, 把该屏钉在指定小节的下拍, 可重复")
+                    help="屏号:小节号, 小节号从 1 开始, 把该屏钉在指定小节的下拍, 可重复; "
+                         "给了播放表时小节号是原曲小节号, 按它在播放表里的首次出现换算")
     ap.add_argument("--fix", action="append", default=None, help="屏号:拍数, 覆盖该屏的公式拍数, 可重复")
     ap.add_argument("--fps", type=int, default=30, help="帧率, 用于换算 frame0 与 frame1")
     ap.add_argument("--json", dest="json_path", default=os.path.join("temp", "plan.json"),
@@ -330,9 +507,21 @@ def main():
     if a.bpm <= 0 or a.meter < 1 or a.fps < 1:
         print("--bpm --meter --fps 必须是正数")
         return 2
-    if a.bars is not None and a.bars < 1:
-        print("--bars 至少为 1")
+    if a.source_bars is not None and a.source_bars < 1:
+        print("--source-bars 至少为 1")
         return 2
+    try:
+        bars_total, bars_spec = parse_bars_spec(a.bars)
+    except BarsError as e:
+        print(str(e))
+        return 2
+    segs, fixed_total, open_src = None, None, None
+    if bars_spec is not None:
+        try:
+            segs, fixed_total, open_src = build_play(bars_spec, a.source_bars)
+        except BarsError as e:
+            print(str(e))
+            return 2
 
     scenes, skipped = parse_script(a.script)
     if not scenes:
@@ -364,6 +553,7 @@ def main():
         screens[gi]["beats"] = n
 
     anchors = {}
+    anchor_map = {}
     for ref, b in parse_pairs(a.anchor, "--anchor").items():
         gi = resolve(ref, screens)
         if gi is None:
@@ -372,21 +562,41 @@ def main():
         if b < 1:
             print("--anchor %d:%d 的小节号从 1 开始" % (ref, b))
             return 2
-        anchors[gi] = b - 1
+        # 有播放表时, --anchor 的小节号是原曲小节号, 取它在播放表里的首次出现位置
+        vb = b - 1
+        if segs is not None:
+            vb = src_to_video(segs, b - 1)
+            if vb is None:
+                print("--anchor %d:%d 的原曲第 %d 小节不在播放表里, 播放表覆盖的原曲小节: %s"
+                      % (ref, b, b, ", ".join(plan_parts(segs))))
+                print("锚点的小节号要落在播放表给出的原曲区间内; 想锚到别的原曲小节, "
+                      "请把覆盖它的区间写进 --bars, 再按它在播放表里的首次出现换算")
+                return 2
+        anchors[gi] = vb
+        anchor_map[gi] = (vb, b - 1)
 
     cursor, free_start, lead = layout(screens, scenes, a.meter, anchors)
     if cursor is None:
         return 2
     content_bars = cursor // a.meter
-    music_bars = a.bars if a.bars is not None else content_bars
+    if bars_total is not None:
+        music_bars = bars_total
+    elif open_src is None:
+        music_bars = fixed_total
+    else:
+        # 开放尾段: 截到排程所需, 最少留 1 小节, 锚点已经把屏推到更后面时也要够长
+        music_bars = max(fixed_total + 1, content_bars)
     if cursor > music_bars * a.meter:
-        report_shortage(screens, music_bars, a.meter, bar, beat)
+        report_shortage(screens, music_bars, a.meter, bar, beat, segs)
         return 1
     fill_rest(screens, scenes, free_start, music_bars, a.meter, lead)
 
+    src_map = video_to_src(segs, music_bars) if segs is not None else list(range(music_bars))
     duration = music_bars * bar
     plan = {"bpm": a.bpm, "beat": round(beat, 6), "bar": round(bar, 6), "meter": a.meter,
             "bars": music_bars, "fps": a.fps, "duration": round(duration, 6), "scenes": []}
+    plan["bars_plan"] = None if segs is None else bars_plan_of(segs, music_bars)
+    plan["source_bars"] = src_map
     for sc in scenes:
         item = {"n": sc["n"], "title": sc["title"], "screens": []}
         for gi in sc["screens"]:
@@ -397,7 +607,10 @@ def main():
                 "n": gi + 1, "text": s["text"], "units": s["units"], "beats": s["beats"],
                 "t": round(t, 6), "dur": round(dur, 6),
                 "bar": s["start"] // a.meter, "beat_in_bar": s["start"] % a.meter,
-                "frame0": int(round(t * a.fps)), "frame1": int(round((t + dur) * a.fps))})
+                "frame0": int(round(t * a.fps)), "frame1": int(round((t + dur) * a.fps)),
+                "src_bar": src_map[s["start"] // a.meter], "src_beat_in_bar": s["start"] % a.meter})
+        # 幕上能对回原曲小节号的字段: 该幕首屏起点的原曲小节号
+        item["src_bar"] = src_map[screens[sc["screens"][0]]["start"] // a.meter]
         plan["scenes"].append(item)
 
     for path in (a.json_path, a.md_path):
@@ -414,14 +627,32 @@ def main():
 
     print("输入 %s: %d 幕 %d 屏, 跳过 %d 行" % (a.script, len(scenes), len(screens), skipped))
     print("BPM %.2f, 拍 %.1f ms, 小节 %.3f s, 每小节 %d 拍" % (a.bpm, beat * 1000, bar, a.meter))
-    if a.bars is None:
+    if bars_total is None and segs is None:
         print("未给 --bars, 按内容所需 %d 小节定总时长" % music_bars)
     print("wrote %s" % a.json_path)
     print("wrote %s" % a.md_path)
     print("总时长 %.2f s (约 %.0f 帧), 内容需要 %d 小节, 音乐 %d 小节, 差额 %+d 小节"
           % (duration, duration * a.fps, content_bars, music_bars, music_bars - content_bars))
+    if segs is not None:
+        print("播放表 (1 基, 逐小节映射见 plan.json 的 source_bars):")
+        for v0, s0, n in segs:
+            cnt = (music_bars - v0) if n is None else n
+            if n is None:
+                src_txt = "%d-end (开放尾段, 按排程所需截到原曲第 %d 小节)" % (s0 + 1, s0 + cnt)
+            else:
+                src_txt = "%d" % (s0 + 1) if cnt == 1 else "%d-%d" % (s0 + 1, s0 + cnt)
+            print("  视频 %d-%d -> 原曲 %s" % (v0 + 1, v0 + cnt, src_txt))
+        if open_src is None:
+            print("播放表共 %d 小节, 内容需要 %d 小节, 差 %+d 小节"
+                  % (music_bars, content_bars, music_bars - content_bars))
+        else:
+            print("播放表共 %d 小节 (其中开放尾段 %d 小节), 内容需要 %d 小节, 差 %+d 小节"
+                  % (music_bars, music_bars - fixed_total, content_bars, music_bars - content_bars))
+    for gi in sorted(anchor_map):
+        vb, sb = anchor_map[gi]
+        print("锚点 第 %d 屏 -> 视频 第 %d 小节 -> 原曲 第 %d 小节" % (gi + 1, vb + 1, sb + 1))
     warn_thin_content(rest_targets(scenes, free_start), music_bars * a.meter - cursor,
-                      content_bars, music_bars, a.meter, beat, bar)
+                      content_bars, music_bars, a.meter, beat, bar, segs)
     return 0
 
 

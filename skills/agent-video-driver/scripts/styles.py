@@ -4,7 +4,8 @@
 
 为什么是牌堆而不是一份风格清单: 引擎能做的风格差别很大, 而放任自流时它总是做最响的那一支
 (近黑底加霓虹加发光大字加一次立体镜头). 那只是牌堆里的一张, 不是本技能的家风. 一张安静的牌
-做好了(编辑排版, 标本图录, 手绘速写)比第四遍做最响的那张更像作品, 所以缺省是抽一张, 不是重来.
+做好了(编辑排版, 标本图录, 手绘速写)比第四遍做最响的那张更像作品, 所以缺省是从牌堆里取候选
+交给用户挑, 而不是让引擎自己重来一遍最响的.
 
 每张牌带这些字段:
 
@@ -20,8 +21,9 @@
   delivery     是否必须按交付尺寸排版(靠细纹理吃饭的牌)
   note         最容易踩的那一条
 
-`references/styles.md` 是前十张牌的详细版(带配色十六进制与参数); 本文件是抽签与落盘用的
-单一来源, `--list` 打印的就是它. 两张表的 id 与名称必须一致, 由 temp/plan/check_styles.py 校验.
+`references/styles.md` 是牌堆的人读版(前十张带配色十六进制与参数, 另十四张带实现指导); 本文件是
+抽签, 取候选与落盘用的机器可读来源, `--list` 打印的就是它. 两张表的 id, 名称与档位必须一致, 由
+`python scripts/style_lottery.py --check` 当场校验(不再依赖任何开发期临时脚本).
 """
 
 DECK = [
@@ -535,6 +537,102 @@ def draw(seed=None, avoid=(), tone=None, rng=None):
     return r.choice(pool)
 
 
+def draw_many(count, seed=None, avoid=(), tone=None):
+    """
+    取多张候选牌
+
+    抽签的用途是取候选, 不是替用户定风格. 同一次取候选里尽量覆盖不同档位(响, 稳, 轻),
+    让三张候选的差别看得出来; 同一档位不够时再用剩余牌补齐. 返回的列表按取出的顺序,
+    抽不到时返回空列表.
+    """
+    import random
+    if count < 1:
+        return []
+    banned = {str(x).strip().lower() for x in avoid}
+    pool = [c for c in DECK if c["id"] not in banned]
+    if tone:
+        pool = [c for c in pool if c["tone"] == tone]
+    r = random.Random(seed)
+    picked = []
+    if not tone:
+        for t in TONE_ORDER:
+            if len(picked) >= count:
+                break
+            same = [c for c in pool if c["tone"] == t]
+            if same:
+                picked.append(r.choice(same))
+    rest = [c for c in pool if c["id"] not in {p["id"] for p in picked}]
+    r.shuffle(rest)
+    for c in rest:
+        if len(picked) >= count:
+            break
+        picked.append(c)
+    return picked[:count]
+
+
+def deck_table(md_path):
+    """
+    从 references/styles.md 的牌堆总览表里读出 id, 档与名称
+
+    表行形如 `| `deep-space-neon` | 响 | 深空霓虹 | ... |`. 读不出来时返回空列表,
+    由调用方把它当作校验失败而不是当作没有牌.
+    """
+    tone_map = {"响": "loud", "稳": "steady", "轻": "light"}
+    rows = []
+    try:
+        with open(md_path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        card_id = cells[0].strip("`").strip()
+        tone = tone_map.get(cells[1])
+        if tone and get(card_id) is not None:
+            rows.append({"id": card_id, "tone": tone, "name": cells[2]})
+    return rows
+
+
+def check_deck(md_path):
+    """
+    校验牌堆两个来源是否一致
+
+    返回 (问题清单). 空清单表示一致: 张数, id 集合, 名称与档位都对得上.
+    """
+    problems = []
+    rows = deck_table(md_path)
+    if not rows:
+        problems.append("读不到 %s 的牌堆总览表, 检查文件是否存在或表头是否被改过" % md_path)
+        return problems
+    both = {c["id"] for c in DECK}
+    seen = [r["id"] for r in rows]
+    dup = sorted({x for x in seen if seen.count(x) > 1})
+    if dup:
+        problems.append("总览表里有重复 id: %s" % ", ".join(dup))
+    only_code = sorted(both - set(seen))
+    only_doc = sorted(set(seen) - both)
+    if only_code:
+        problems.append("只在 scripts/styles.py 里, 总览表缺: %s" % ", ".join(only_code))
+    if only_doc:
+        problems.append("只在 references/styles.md 里, 牌堆缺: %s" % ", ".join(only_doc))
+    for r in rows:
+        card = get(r["id"])
+        if card is None:
+            continue
+        if card["name"] != r["name"]:
+            problems.append("%s 的名称不一致: 牌堆 %s, 总览表 %s"
+                            % (r["id"], card["name"], r["name"]))
+        if card["tone"] != r["tone"]:
+            problems.append("%s 的档位不一致: 牌堆 %s, 总览表 %s"
+                            % (r["id"], card["tone"], r["tone"]))
+    return problems
+
+
 def style_md(card, seed=None, avoided=()):
     """
     把一张牌写成 STYLE.md 的正文
@@ -582,7 +680,7 @@ def style_md(card, seed=None, avoided=()):
         "",
         "## 纪律",
         "",
-        "- 抽到哪张做哪张, 不要因为这张不够炫就换牌; 牌里一半是轻的, 轻的做干净了一样好看",
+        "- 这张牌是候选里挑定的一张; 挑定之后按它做, 不要再中途换牌(要换就回阶段 3 重出候选与样图)",
         "- 逐场实现顺序: 底板与环境光, 主体, 运动, 版面家具, 每一档先用 at 看一帧",
     ]
     if card.get("delivery"):

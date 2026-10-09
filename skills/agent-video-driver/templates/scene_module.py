@@ -13,9 +13,12 @@
 plan 不给进程数时取 scripts/resources.py 的建议, 导入不到就退回内置规则
 每个区间要用独立的进程各跑各的, 不要用共享队列 (沙箱会拦命名管道)
 
+配置优先取工程根的 theme.py (唯一配置源: 身份与署名, 时间网格, 画幅, 色板, 字体与字号,
+段落与幕表), 取不到才用本文件顶部的回退常量; 单独把这个模板复制走也能跑.
+
 段落边界有两种来源, 优先级从高到低
   1 temp/plan.json (由 scripts/timing.py 从屏文案表排出), 幕边界即段落边界
-  2 本文件顶部的 SEG 常量
+  2 theme.py 的 SEG_OF_DEMO 常量, 没有 theme.py 时用本文件顶部的同名回退常量
 无论用哪一种, 渲染前都要跑一次 segments 打印起止帧核对
 
 一个场景函数对应一幕, 不是一屏: 幕内有多屏时必须在函数内部用 sub(t) 取当前屏序再分支,
@@ -47,21 +50,61 @@ try:
 except ImportError:
     resources = None
 
-# ----------------------------------------------------------------- 时间栅格与画幅
+# ----------------------------------------------------------------- 配置来源
+# 取值优先级: 工程根的 theme.py > 本文件下面的回退常量
+# theme.py 在时它是唯一配置源: 身份与署名, 时间网格, 画幅, 色板, 字体与字号, 段落与幕表都从它取.
+# 单独把这个模板复制走 (没有 theme.py) 也能跑, 此时用下面那批回退常量, 值等于 new_project.py 的缺省.
+# new_project.py 生成工程时把 CLI 参数同时写进 theme.py 与这里的回退常量,
+# 于是删掉 theme.py 之后工程仍然与 CLI 参数一致.
+try:
+    import theme as T
+except ImportError:
+    T = None
+
+
+def tval(name, fallback):
+    """theme.py 里有这个常量就取它的值, 取不到 (包括没有 theme.py) 就用回退值"""
+    return getattr(T, name, fallback) if T is not None else fallback
+
+
+# ----------------------------------------------------------------- 时间栅格与画幅 (回退值)
 # 画面切点必须与配乐切点完全一致, 两者都从这里取值
 BPM = 100.0
 DUR = 108.0
+FPS = 30
 # 画幅: 16:9 是 1920x1080, 9:16 是 1080x1920, 1:1 是 1080x1080, 也可以给自定义偶数宽高;
 # configure 覆盖 W/H 时数学原点 OX/OY 自动落到新画幅中点, 布局组件按短边比例重排
 W, H = 1920, 1080
-cv.configure(BPM=BPM, DUR=DUR, W=W, H=H, FRAMES=os.path.join("temp", "frames_proj"))
+# 帧序列目录是 temp/frames_<前缀>
+FRAME_PREFIX = "proj"
+# theme.py 存在时, 下面这批同名常量覆盖上面的回退值
+BPM = tval("BPM", BPM)
+DUR = tval("DUR", DUR)
+FPS = tval("FPS", FPS)
+W = tval("W", W)
+H = tval("H", H)
+FRAME_PREFIX = tval("FRAME_PREFIX", FRAME_PREFIX)
+cv.configure(BPM=BPM, DUR=DUR, W=W, H=H, FPS=FPS,
+             FRAMES=os.path.join("temp", "frames_" + FRAME_PREFIX))
 BEAT, BAR = cv.BEAT, cv.BAR
 
 SEG = [k * BAR for k in (0, 3, 7, 11, 15, 21, 27, 33, 38, 43, 45)]
+# 切点栅格优先取 theme.py, 取不到才用上面这份示例
+SEG = [float(v) for v in tval("SEG", SEG)]
 CUTS = SEG[1:]
 cv.configure(CUTS=CUTS)
 
 PLAN = os.path.join("temp", "plan.json")
+
+# 可选的音频包络: 由 scripts/audio_env.py 导出, 元素取它可以跟着音乐实际强弱起伏, 而不是只跟拍号.
+# 没有这个文件 (或还没导出) 时 ENV 为 None, 所有取用点都要先判空.
+# 包络是按帧索引的, 帧率必须与导出时一致: check_fps 会核对并直接报错, 不会悄悄错位.
+try:
+    import audio_env
+    ENV = audio_env.Env.load(os.path.join("temp", "score_env.npz"))
+    ENV.check_fps(cv.FPS)
+except Exception:
+    ENV = None
 
 # 并行渲染进程数的内置回退规则: clamp(floor(逻辑核数 / WORKERS_DIV), 1, WORKERS_MAX)
 # 上限 4 与本技能既有的并行渲染约定一致, 也见 scripts/resources.py
@@ -69,24 +112,48 @@ WORKERS_DIV = 4
 WORKERS_MAX = 4
 
 # 段落调度边界, 与音乐栅格 SEG 是两件事
-# 没有 plan.json 时用这份演示值: 3 个场景函数对应 3 段
+# 没有 plan.json 时用这份演示值: 3 个场景函数对应 3 段; theme.py 的幕表优先
 SEG_OF_DEMO = [0.0, SEG[1], SEG[2], DUR]
+SEG_OF_DEMO = [float(v) for v in tval("SEG_OF_DEMO", SEG_OF_DEMO)]
 
 # 每一幕的屏数, 要与 script.md 的屏数一致; 第 1 幕给 2 屏用来演示幕内多屏的屏序分支
 # 有 temp/plan.json 时屏起点直接读它, 这份常量只在读不到时兜底
 SCREEN_COUNT = [1, 2, 1]
+SCREEN_COUNT = [max(1, int(v)) for v in tval("SCREEN_COUNT", SCREEN_COUNT)]
 
 # ----------------------------------------------------------------- 调色板
-# 换风格只改这一块与背景三色, 风格库见 references/styles.md
-ACC = cv.CYAN
-ACC2 = cv.AMBER
-ACC3 = cv.GREEN
-TXT = cv.WHITE
-DIM = cv.DIM
+# 换风格只改 theme.py 的色板段, 这里只是没有 theme.py 时的回退, 风格库见 references/styles.md
+ACC = tval("ACCENT_1", cv.CYAN)
+ACC2 = tval("ACCENT_2", cv.AMBER)
+ACC3 = tval("ACCENT_3", cv.GREEN)
+ACC4 = tval("ACCENT_4", cv.PINK)
+TXT = tval("TEXT", cv.WHITE)
+DIM = tval("TEXT_DIM", cv.DIM)
+
+# ----------------------------------------------------------------- 字体与字号
+# 字体键必须存在于 scripts/canvas.py 的 FONT_PATH 表; 没有 theme.py 时用这批回退键与回退字号
+FONT_TITLE = tval("FONT_TITLE", "cnb")
+FONT_TEXT = tval("FONT_TEXT", "cnb")
+FONT_MONO = tval("FONT_MONO", "mono")
+FONT_MONO_REGULAR = tval("FONT_MONO_REGULAR", "monor")
+SIZE_SUB = tval("SIZE_SUB", 42)
+SIZE_EMPHASIS = tval("SIZE_EMPHASIS", 64)
+SIZE_CAPTION = tval("SIZE_CAPTION", 36)
+SIZE_NOTE = tval("SIZE_NOTE", 30)
+
+# ----------------------------------------------------------------- 身份与署名
+# 模板缺省不画署名; 用户要求署名时 (只在片尾卡出现) 从这里取文案, 不要另写一份
+AUTHOR = tval("AUTHOR", "")
+AUTHOR_URL = tval("AUTHOR_URL", "")
+CREDIT_LINE = tval("CREDIT_LINE", "")
+BYLINE = tval("BYLINE", "")
 
 
 def setup():
-    cv.ensure_bg(force=True, top=(9, 17, 35), bot=(2, 4, 9), light=(8, 19, 38))
+    cv.ensure_bg(force=True,
+                 top=tval("BG_TOP", (9, 17, 35)),
+                 bot=tval("BG_BOT", (2, 4, 9)),
+                 light=tval("BG_LIGHT", (8, 19, 38)))
 
 
 def load_plan(path=None):
@@ -121,8 +188,8 @@ def load_plan(path=None):
 SEG_OF = load_plan() or SEG_OF_DEMO
 
 
-def caption(c, lb, k, text, color=TXT, size=36, y=900.0):
-    cv.caption(c, lb, k, text, color=color, size=size, y=y)
+def caption(c, lb, k, text, color=TXT, size=SIZE_CAPTION, y=900.0):
+    cv.caption(c, lb, k, text, color=color, size=size, y=y, kind=FONT_TEXT)
 
 
 # ----------------------------------------------------------------- 段落
@@ -137,12 +204,14 @@ def s_title(c, t):
         c.bloom((cv.W / 2, 372), 1100, (34, 74, 130), 0.30 * min(imp, 1.6) * a)
         # 字号由目标宽度反解, 换一个更长的标题也不会撑出画幅;
         # 纵向用 text_cap 按字高带对齐, 中英混排时比 mm 锚点稳
-        size = cv.fit_size("主标题写这里", cv.W * 0.62)
-        c.text_cap((cv.W / 2, 372), "主标题写这里", size, TXT, a, cap="center", halign="m")
+        size = cv.fit_size("主标题写这里", cv.W * 0.62, kind=FONT_TITLE)
+        c.text_cap((cv.W / 2, 372), "主标题写这里", size, TXT, a, cap="center", halign="m",
+                   kind=FONT_TITLE)
     b = cv.beat_on(lb, 3.0, 0.7)
     if b > 0:
-        c.text((cv.W / 2, 560), "副标题写这里", 42, ACC, b * 0.95, anchor="mm")
-    caption(c, lb, 5.0, "一句点题的短句", DIM, 30, y=800)
+        c.text((cv.W / 2, 560), "副标题写这里", SIZE_SUB, ACC, b * 0.95,
+               anchor="mm", kind=FONT_TEXT)
+    caption(c, lb, 5.0, "一句点题的短句", DIM, SIZE_NOTE, y=800)
 
 
 def s_chart(c, t):
@@ -156,8 +225,9 @@ def s_chart(c, t):
         # 第二屏换一套画法; 不分支的话这里画的东西会被下面第一屏的内容盖掉
         b2 = cv.beat_on(lb, 1.0, 0.8)
         if b2 > 0:
-            c.text_cap((cv.W / 2, 520), "第二屏的内容", 64, ACC2, b2, cap="center", halign="m")
-        caption(c, lb, 4.0, "第二屏的结论", TXT, 36, y=884)
+            c.text_cap((cv.W / 2, 520), "第二屏的内容", SIZE_EMPHASIS, ACC2, b2,
+                       cap="center", halign="m", kind=FONT_TITLE)
+        caption(c, lb, 4.0, "第二屏的结论", TXT, SIZE_CAPTION, y=884)
         return
     pa = cv.beat_on(lb, 1.0, 0.8)
     if pa > 0:
@@ -173,7 +243,7 @@ def s_chart(c, t):
             n = max(2, int(81 * cv.eo(cv.seg(lb, 3.0, 7.6))))
             for i in range(n - 1):
                 c.gline(pts[i], pts[i + 1], ACC, 4.2, na, glow=1.0)
-    caption(c, lb, 8.0, "结论写这里", TXT, 36, y=884)
+    caption(c, lb, 8.0, "结论写这里", TXT, SIZE_CAPTION, y=884)
 
 
 SCENES = [s_title, s_chart, s_chart]

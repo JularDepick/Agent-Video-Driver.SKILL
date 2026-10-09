@@ -4,13 +4,20 @@
 
 设计目标: 不刺耳, 不单调
   不刺耳: 全部音色基于谐波堆叠而非宽带噪声, 母带压高频补温暖区
-  不单调: 按切点分段的配器表, 每段换乐器组合与音区 (段数超过表行数时循环取用),
-          旋律用动机加变奏, 力度有起落弧线
+  不单调: 旋律用动机加变奏, 力度有起落弧线; 配器取行有两种口径
+          1 缺省: 按画面切点分段, 每段取一行配器 (段数超过表行数时在余下九行里循环).
+            缺点: 段名与位置脱钩, 音乐结构由画面切点派生, 听感偏背景板
+          2 逐小节编曲 (推荐): --arrange 给出一小节一行的意图表, 段落意图与小节位置
+            直接绑定, 不再由切点派生. 三条经验都能在表里直接表达:
+            前 1 到 2 小节写 blank 留白, 中段写 break 抽掉本小节两拍底鼓再回来,
+            末 1 到 2 小节写 tail 做减法只留弦乐与一枚干净尾音
 
   python orchestra.py <时长秒> <BPM> <输出文件名> [切点逗号分隔] [输出目录]
   python orchestra.py 108 100 score_orch.wav "7.2,16.8,26.4,36,50.4,64.8,79.2,91.2,103.2" audio
   python orchestra.py 288 100 score.wav "12,24,36" audio --sr 24000
   python orchestra.py 288 100 score.wav "12,24,36" audio --chunk 60
+  python orchestra.py 16 120 score_arr.wav "8" temp --arrange "blank,intro,bed,drive,break,full,rise,tail"
+  python orchestra.py 16 120 score_arr.wav "8" temp --arrange-file plan.txt
 
 位置参数 (前 5 个与旧版完全一致):
   1 时长秒       2 BPM       3 输出文件名 (纯文件名, 不要带目录;
@@ -24,11 +31,19 @@
   --chunk 秒  分段写盘: 按秒数把时间轴切段, 每段独立合成与母带后落盘, 末尾用
               ffmpeg concat 拼接. 缺省不分段 (整条一次算), 段与段的接缝落在
               切点上时不给 (不给则只在切点处切). 长片加低内存时两者可同用
+  --arrange 表   逐小节编曲意图表, 逗号分隔, 一小节一项. 名字见打印出的图例;
+                  表长于小节数时报错退出 2 并列出多余的项, 短于小节数时按
+                  --arrange-fill 处理 (缺省 loop 循环, 并在打印里说明)
+  --arrange-file 文件  同上, 从文件读: 一行一个名字, 允许逗号分隔与 # 注释
+  --arrange-fill loop|hold  短表的取舍: loop 循环取用, hold 沿用最后一小节到结尾
+
+给了 --arrange 时切点仍参与力度弧线与切点前的滚镲, 但不再决定配器分段
 """
 import argparse
 import os
 import subprocess
 import sys
+from collections import namedtuple
 
 import numpy as np
 
@@ -46,6 +61,17 @@ def _parse_args(argv):
     ap.add_argument("out", nargs="?", default="audio")
     ap.add_argument("--sr", dest="sr", type=int, default=None)
     ap.add_argument("--chunk", dest="chunk", type=float, default=0.0)
+    ap.add_argument("--arrange", dest="arrange", default=None,
+                    help="逐小节编曲意图表, 逗号分隔, 一小节一项, 例如 "
+                         "blank,blank,intro,bed,drive,break,full,rise,out,tail; "
+                         "表长于小节数时报错退出 2, 短于小节数时按 --arrange-fill 处理")
+    ap.add_argument("--arrange-file", dest="arrange_file", default=None,
+                    help="从文件读逐小节编曲意图表: 一行一个名字, 允许逗号分隔与 # 注释; "
+                         "与 --arrange 不能同时给出")
+    ap.add_argument("--arrange-fill", dest="arrange_fill", default="loop",
+                    choices=("loop", "hold"),
+                    help="编排表短于小节数时的取舍: loop 按表循环取用 (缺省), "
+                         "hold 把最后一小节的名字延续到结尾")
     a, unknown = ap.parse_known_args(argv)
     if unknown:
         raise SystemExit("未知参数: %s" % " ".join(unknown))
@@ -301,15 +327,186 @@ def row_of_seg(seg):
     return 1 + (seg - 1) % rest
 
 
+def legacy_row_index(bar_i):
+    """按切点分段取配器行号: 旧口径, 不给 --arrange 时行为与改造前逐样本一致"""
+    return row_of_seg(seg_of_time(bar_i * BAR))
+
+
 def section_of(bar_i):
     """
-    按切点分段取配器行
+    按切点分段取配器行 (旧口径, 返回 9 元组)
 
     旧版按固定小节号查表, 表只有十行且末行区间是 (43, 999), 第 43 小节之后全部落到末行,
     而末行的拨弦系数是 0; 480 秒的片有 200 小节, 于是后 78% 的段落没有节奏层
     (实测折叠包络起伏只有 0.18, 判据是大于 0.35)
     """
-    return SECTIONS[row_of_seg(seg_of_time(bar_i * BAR))]
+    return SECTIONS[legacy_row_index(bar_i)]
+
+
+# ----------------------------------------------------------------- 逐小节编曲表
+# 一小节一行: 意图名 -> 配器行, 让段落意图与小节位置绑定, 而不是由画面切点派生
+# 行字段: 弦乐, 竖琴, 主奏, 对位, 拨弦, 定音鼓, 人声, 音区偏移, 力度, 底鼓拍号, 尾音标记
+Row = namedtuple("Row", "s_str s_harp lead cnt s_pizz s_timp s_choir oct_shift dyn kick bell")
+
+
+def legacy_row(t):
+    """旧配器行 (9 元组) 补上底鼓拍号与尾音标记: 有鼓的旧行只在第 0 拍落鼓, 音量口径不变"""
+    return Row(t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8],
+               (0,) if t[5] > 0 else (), False)
+
+
+LEGACY_ROWS = [legacy_row(t) for t in SECTIONS]
+
+# 每项: 配器行, 中文名, 打印用的语义备注
+# blank 满足"前 1 到 2 小节留白", break 满足"中段抽掉底鼓两拍再回来", tail 满足"减法留干净尾音"
+INTENT_ROWS = {
+    "blank": (Row(0.0, 0.0, None, None, 0.00, 0.0, 0.00, 0, 0.00, (), False),
+              "留白", "不落任何乐器声部 (转场滚镲与力度弧线仍按切点走)"),
+    "intro": (Row(1.0, 1.0, None, None, 0.00, 0.0, 0.00, 0, 0.62, (), False),
+              "引子", "只有弦乐底与竖琴, 没有节奏层"),
+    "bed": (Row(1.0, 1.0, None, None, 0.30, 0.0, 0.00, 0, 0.60, (), False),
+            "铺垫", "引子上加轻拨弦, 仍不出主奏"),
+    "drive": (Row(1.0, 1.0, "clarinet", None, 0.85, 0.8, 0.00, 0, 0.80, (0, 2), False),
+              "推进", "主奏进场, 底鼓落 0 与 2 两拍"),
+    "full": (Row(1.0, 1.0, "clarinet", "horn", 1.00, 0.9, 0.60, 12, 1.00, (0, 2), False),
+             "全奏", "最满的一行, 人声进场且主奏上抬八度"),
+    "break": (Row(1.0, 1.0, "clarinet", None, 0.30, 0.0, 0.00, 0, 0.68, (), False),
+              "抽鼓", "相对 drive/full 的两拍底鼓, 本小节底鼓全抽, 下一小节再回来"),
+    "fall": (Row(1.0, 1.0, "flute", None, 0.45, 0.0, 0.00, 0, 0.62, (), False),
+             "回落", "换长笛, 力度收一档"),
+    "rise": (Row(1.0, 1.0, "horn", None, 0.70, 0.6, 0.00, 0, 0.78, (0,), False),
+             "起势", "圆号加定音鼓, 给下一小节铺路"),
+    "out": (Row(1.0, 1.0, "horn", None, 0.70, 0.6, 0.70, 0, 0.66, (0,), False),
+            "收束", "成型的结束句, 有鼓有人声但力度收回"),
+    "tail": (Row(1.0, 0.0, None, None, 0.00, 0.0, 0.00, 0, 0.42, (), True),
+             "尾音", "做减法: 只留弦乐与一枚干净尾音"),
+}
+
+INTENT_ALIAS = {"silence": "blank", "drop": "full"}
+
+NBARS = max(1, int(-(-DUR // BAR)))
+
+
+def fail(msg):
+    """编排表的口径错误统一走退出码 2, 与 argparse 的错误码一致"""
+    print(msg, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def split_names(text):
+    """逗号分隔的意图名转成规范名: 去空白, 转小写, 丢掉空项"""
+    return [x.strip().lower() for x in text.split(",") if x.strip()]
+
+
+def names_from_file(path):
+    """编排表文件: 一行一个名字, 允许逗号分隔; # 起整行或行尾注释"""
+    if not os.path.isfile(path):
+        fail("编排表文件不存在: %s" % path)
+    names = []
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+        for line in f:
+            names.extend(split_names(line.split("#", 1)[0]))
+    return names
+
+
+def load_arrange(a):
+    """解析 --arrange / --arrange-file: 名字与长度都在这里校验完, 不合法即退出 2"""
+    if not a.arrange and not a.arrange_file:
+        return None
+    if a.arrange and a.arrange_file:
+        fail("--arrange 与 --arrange-file 不能同时给出")
+    names = names_from_file(a.arrange_file) if a.arrange_file else split_names(a.arrange)
+    if not names:
+        fail("编排表为空: 至少要有一个意图名")
+    bad = sorted({n for n in names if n not in INTENT_ROWS and n not in INTENT_ALIAS})
+    if bad:
+        fail("未知意图名: %s\n可用名: %s"
+             % (", ".join(bad), ", ".join(sorted(INTENT_ROWS))))
+    names = [INTENT_ALIAS.get(n, n) for n in names]
+    if len(names) > NBARS:
+        extra = names[NBARS:]
+        fail("编排表 %d 项多于小节数 %d (%.2f 秒 / %.1f BPM, 每小节 %.2f 秒), "
+             "多余的 %d 项: %s"
+             % (len(names), NBARS, DUR, BPM, BAR, len(extra), ", ".join(extra)))
+    return names
+
+
+FILL = _A.arrange_fill
+ARRANGE_NAMES = load_arrange(_A)
+ARRANGE_PLAN = None if ARRANGE_NAMES is None else [INTENT_ROWS[n][0] for n in ARRANGE_NAMES]
+
+
+def arrange_index(bar_i):
+    """
+    第 bar_i 小节取编排表第几项
+
+    表短于小节数时按 FILL 处理: loop 循环取用 (会把收束与尾音搬到中段, 打印里明确提示),
+    hold 把最后一小节的名字延续到结尾
+    """
+    n = len(ARRANGE_NAMES)
+    if bar_i < n:
+        return bar_i
+    if FILL == "loop":
+        return bar_i % n
+    return n - 1
+
+
+def intent_of_bar(bar_i):
+    """第 bar_i 小节的意图名, 已解析别名"""
+    return ARRANGE_NAMES[arrange_index(bar_i)]
+
+
+def row_of_bar(bar_i):
+    """第 bar_i 小节的配器行: 有编排表按表取, 没有则按切点分段取 (旧口径)"""
+    if ARRANGE_PLAN is not None:
+        return ARRANGE_PLAN[arrange_index(bar_i)]
+    return LEGACY_ROWS[legacy_row_index(bar_i)]
+
+
+def print_arrange_plan():
+    """编排表总览: 表长与填充取舍, 名字图例, 以及段界落在哪些小节; 逐小节明细在渲染里打"""
+    if ARRANGE_PLAN is None:
+        return
+    print("编曲表: %d 小节 (每小节 %.2f 秒, %.2f 秒 / %.1f BPM), 表 %d 项%s"
+          % (NBARS, BAR, DUR, BPM, len(ARRANGE_NAMES),
+             ", 一小节一对一" if len(ARRANGE_NAMES) == NBARS else ", 填充口径 %s" % FILL))
+    if len(ARRANGE_NAMES) < NBARS:
+        # 短表的取舍必须在打印里说清选了哪种, 且 loop 会把结尾的收束与尾音提前搬到中段
+        if FILL == "loop":
+            print("提示: 表 %d 项短于 %d 小节, 采用 loop 循环: 第 %d 项 \"%s\" 之后回到第 0 项, "
+                  "收束与尾音会在中段重复出现; 要位置绑定就把表写到 %d 项, "
+                  "或改用 --arrange-fill hold"
+                  % (len(ARRANGE_NAMES), NBARS, len(ARRANGE_NAMES) - 1,
+                     INTENT_ROWS[ARRANGE_NAMES[-1]][1], NBARS))
+        else:
+            print("提示: 表 %d 项短于 %d 小节, 采用 hold 延续: 第 %d 到 %d 小节沿用最后一小节 \"%s\""
+                  % (len(ARRANGE_NAMES), NBARS, len(ARRANGE_NAMES), NBARS - 1,
+                     INTENT_ROWS[ARRANGE_NAMES[-1]][1]))
+    print("意图名图例: " + " | ".join(
+        "%s %s (%s)" % (n, INTENT_ROWS[n][1], INTENT_ROWS[n][2]) for n in INTENT_ROWS))
+    print("别名: " + " | ".join("%s -> %s" % (k, v) for k, v in sorted(INTENT_ALIAS.items())))
+    print("段界(小节号 起-止 / 意图 / 小节数):")
+    i = 0
+    while i < NBARS:
+        name = intent_of_bar(i)
+        j = i
+        while j + 1 < NBARS and intent_of_bar(j + 1) == name:
+            j += 1
+        print("  小节 %03d-%03d  %s(%-8s) %d 小节" % (i, j, INTENT_ROWS[name][1], name, j - i + 1))
+        i = j + 1
+
+
+def print_bar_row(bar_i, name, r, t0):
+    """逐小节明细: 意图名与它实际用到的配器, 让 Agent 不靠总数就能核对位置与配器"""
+    kick = ",".join(str(b) for b in r.kick) if r.kick else "无"
+    harp = "有" if r.s_harp > 0 else ("尾音" if r.bell else "无")
+    print("  小节 %03d  %7.2f 秒  意图 %s(%-8s) 弦乐 %.2f 竖琴 %-4s 主奏 %-9s 对位 %-9s"
+          " 拨弦 %.2f 底鼓 %-5s 人声 %.2f 音区 %+d 力度 %.2f"
+          % (bar_i, t0, INTENT_ROWS[name][1], name, r.s_str, harp, r.lead or "无",
+             r.cnt or "无", r.s_pizz, kick, r.s_choir, r.oct_shift, r.dyn))
+
+
+print_arrange_plan()
 
 
 def main():
@@ -415,18 +612,25 @@ def render_master(seg_a, seg_b):
     bar_last = int(-(-seg_b // BAR))
     nbars = bar_last - bar_first
     # 打印每段的配器取行, 与"每段起止帧必须核对"同理: 全片落在一行上就是没有层次
-    print("配器分段: %d 段, 表 %d 行, 第 0 段引子, 其余循环取用"
-          % (len(SEG_BOUNDS) - 1, len(SECTIONS)))
-    for i in range(len(SEG_BOUNDS) - 1):
-        row = row_of_seg(i)
-        s = SECTIONS[row]
-        print("  段 %02d  %.2f 到 %.2f 秒  表行 %02d  主奏 %-9s 拨弦 %.1f 定音鼓 %.1f 力度 %.2f"
-              % (i, SEG_BOUNDS[i], SEG_BOUNDS[i + 1], row, s[2] or "无", s[4], s[5], s[8]))
+    # 有编排表时配器不再按段取, 该打印换成逐小节明细, 由 print_bar_row 负责
+    if ARRANGE_PLAN is None:
+        print("配器分段: %d 段, 表 %d 行, 第 0 段引子, 其余循环取用"
+              % (len(SEG_BOUNDS) - 1, len(SECTIONS)))
+        for i in range(len(SEG_BOUNDS) - 1):
+            row = row_of_seg(i)
+            s = SECTIONS[row]
+            print("  段 %02d  %.2f 到 %.2f 秒  表行 %02d  主奏 %-9s 拨弦 %.1f 定音鼓 %.1f 力度 %.2f"
+                  % (i, SEG_BOUNDS[i], SEG_BOUNDS[i + 1], row, s[2] or "无", s[4], s[5], s[8]))
     for bi in range(nbars):
         bar_i = bar_first + bi
         t0 = bar_i * BAR
         root, tones, ci = CHORDS[bar_i % 4]
-        (s_str, s_harp, lead, cnt, s_pizz, s_timp, s_choir, oct_shift, dyn) = section_of(bar_i)
+        r = row_of_bar(bar_i)
+        s_str, s_harp, lead = r.s_str, r.s_harp, r.lead
+        cnt, s_pizz, s_timp = r.cnt, r.s_pizz, r.s_timp
+        s_choir, oct_shift, dyn = r.s_choir, r.oct_shift, r.dyn
+        if ARRANGE_PLAN is not None:
+            print_bar_row(bar_i, intent_of_bar(bar_i), r, t0)
 
         if s_str > 0:
             # 弦乐是持续层, 电平必须压在节奏层之下: 实测 0.16 时弦乐群 RMS 0.061 而拨弦加
@@ -444,6 +648,10 @@ def render_master(seg_a, seg_b):
                 # 拍间那一格量的是反拍八分音符, 它与拍上的电平差决定拍点峰值比
                 amp = 0.22 if k % 2 == 0 else 0.04
                 add(harp_b, harp(hz(semi), 0.9, amp * s_harp * dyn), t0 + k * BEAT * 0.5 - seg_a)
+
+        if r.bell:
+            # 尾音: 只在小节头落一枚竖琴单音, 与 tail 行的减法配器一起构成干净收束
+            add(harp_b, harp(hz(tones[0] + 12), 1.6, 0.26 * dyn), t0 - seg_a)
 
         if lead:
             ph = (bar_i // 4) % len(PHRASE_PLAN)
@@ -478,7 +686,14 @@ def render_master(seg_a, seg_b):
                 add(low_b, stacc(hz(semi - 12), 0.22, amp * s_pizz * dyn), t0 + k * BEAT * 0.5 - seg_a)
 
         if s_timp > 0:
-            add(perc_b, timpani(hz(root - 12), 1.7, 0.70 * s_timp * dyn), t0 - seg_a)
+            # 底鼓按行里的拍号落: 旧行的拍号固定是 (0,), 只在小节头落, 音量与改造前一致;
+            # 编排表里的 drive/full 落 0 与 2 两拍, break 行拍号为空即"抽掉这两拍底鼓"
+            for beat in r.kick:
+                # 第 0 拍给全长衰减, 其余拍压短, 免得两拍鼓尾在 4/4 小节里叠成糊
+                dur_k = 1.7 if beat == 0 else 1.0
+                amp_k = 0.70 if beat == 0 else 0.49
+                add(perc_b, timpani(hz(root - 12), dur_k, amp_k * s_timp * dyn),
+                    t0 + beat * BEAT - seg_a)
 
         if s_choir > 0:
             for semi in tones:
