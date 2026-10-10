@@ -18,6 +18,7 @@
 """
 import argparse
 import os
+import random
 import re
 import shutil
 import sys
@@ -195,18 +196,26 @@ def copy_scripts(dst):
 
 
 def write_style(project, style_id, seed, tone=None):
-    """有 style_lottery.py 就让它把牌面落到项目里, 没有就只留一句提示"""
+    """
+    有 style_lottery.py 就让它把牌面落到项目里, 没有就只留一句提示
+
+    种子一定传下去: 不给时这里自己生成一个. 不传种子时 style_lottery 会用随机种子,
+    抽出来的牌无法复现, 而技能对外承诺的是"抽一张, 可复现"; 生成的种子会被
+    style_lottery 写进 STYLE.md 或 STYLE_candidates.md 的头部, 于是随机与可复现兼得
+    """
     lot = os.path.join(SCRIPTS, "style_lottery.py")
     if not os.path.exists(lot):
         print("提示: 还没有 style_lottery.py, 风格牌面需要自己从 references/styles.md 选")
-        return
+        return None
+    if seed is None:
+        seed = random.randrange(1, 100000000)
+        print("抽签种子: %s (没给 --seed, 已自动生成; 牌面文件头部会记下它, 便于复现)" % seed)
     cmd = [sys.executable, lot, "--write", project]
     if style_id:
         cmd += ["--style", style_id]
     if tone:
         cmd += ["--tone", tone]
-    if seed is not None:
-        cmd += ["--seed", str(seed)]
+    cmd += ["--seed", str(seed)]
     import subprocess
     # 必须显式给 encoding: Windows 上 text=True 会按系统代码页(GBK)解码子进程输出,
     # 而抽签脚本打印的是 UTF-8 中文, 读线程会直接抛 UnicodeDecodeError
@@ -220,6 +229,7 @@ def write_style(project, style_id, seed, tone=None):
         print("提示: 抽风格没成功 (%s)" % ((p.stderr or p.stdout or "").strip()[:120]))
     elif (p.stdout or "").strip():
         print(p.stdout.strip())
+    return seed
 
 
 def main():
@@ -236,7 +246,8 @@ def main():
     ap.add_argument("--style", default=None, help="风格牌 id, 交给 style_lottery.py 落成 STYLE.md")
     ap.add_argument("--tone", choices=("loud", "steady", "light"), default=None,
                     help="只在某一档里抽风格牌: loud 响 / steady 稳 / light 轻")
-    ap.add_argument("--seed", type=int, default=None, help="抽风格的随机种子, 便于复现")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="抽风格的随机种子; 不给时自动生成一个并记进牌面文件头部, 保证可复现")
     ap.add_argument("--force", action="store_true", help="目标目录非空时也继续")
     a = ap.parse_args()
 

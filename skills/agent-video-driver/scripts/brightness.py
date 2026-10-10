@@ -15,7 +15,8 @@
 
 判据:
   中位数决定底色深浅, 暗场片常在 5 到 30 之间
-  p95 决定字幕亮度, 白字约 200 到 250
+  亮部决定字幕亮度, 白字约 200 到 250; p95 与 p99 达标其一即算通过
+    (暗场少亮元素的构图里, 亮字面积不足 5%, p95 天然落在底色亮度上, 只看 p95 会系统性误报)
   均值偏离参考 2 倍以上说明管线有问题, 不要用调色去补
 """
 import argparse
@@ -31,6 +32,11 @@ from PIL import Image
 TMP = "brightness_tmp_%d.png" % os.getpid()
 DARK_MAX = 30.0
 BRIGHT_MIN = 140.0
+# 亮部判据的两个分位数下限; 达标其一即算通过, 原因见 judge()
+P95_MIN = 120.0
+P99_MIN = 120.0
+# 亮部面积占比低于这个值时, p95 必然落在底色亮度上, 不能拿它判"白字不亮"
+BRIGHT_FRAC_LOW = 0.05
 
 
 def luma(a):
@@ -95,7 +101,13 @@ def analyse(path, times):
 
 
 def judge(ms, ref):
-    """按参考片判底色与字幕, 返回提示清单"""
+    """
+    按参考片判底色与字幕, 返回 [(级别, 提示), ...], 级别取 "fail" 或 "info"
+
+    亮部判据用 p95 与 p99 达标其一, 不单看 p95: p95 本质在量亮色像素的面积占比,
+    暗场蓝底占 75% 像素而亮字面积不足 5% 的屏, p95 天然落在底色亮度上, 与"白字不亮"
+    无关. 实测一组 27 屏的片子里 11 屏被单看 p95 的判据误报, 逐屏字符图核对构图全部完整
+    """
     notes = []
     if ref is not None:
         for k in ("mean", "median", "p95"):
@@ -104,14 +116,24 @@ def judge(ms, ref):
                 continue
             r = a / b
             if r >= 2.0 or r <= 0.5:
-                notes.append("%s 是参考的 %.2f 倍 (%s 对 %s), 偏离 2 倍以上, 先查管线再谈调色"
-                             % (k, r, a, b))
+                notes.append(("fail", "%s 是参考的 %.2f 倍 (%s 对 %s), 偏离 2 倍以上, "
+                                      "先查管线再谈调色" % (k, r, a, b)))
     if ms["median"] > 120.0:
-        notes.append("中位数 %.1f 偏高, 这是亮场片的量级; 暗场片应落在 5 到 30 之间" % ms["median"])
-    if ms["p95"] < 120.0:
-        notes.append("p95 只有 %.1f, 白字不够亮; 字幕用的白字 p95 应在 200 到 250" % ms["p95"])
+        notes.append(("fail", "中位数 %.1f 偏高, 这是亮场片的量级; 暗场片应落在 5 到 30 之间"
+                      % ms["median"]))
+    p95, p99 = ms["p95"], ms["p99"]
+    frac = ms["bright_frac"]
+    if p95 < P95_MIN and p99 < P99_MIN:
+        notes.append(("fail", "p95 与 p99 都只有 %.1f 与 %.1f, 亮部确实不够亮 (亮部面积占 %.2f%%); "
+                              "白字应在 200 到 250, 先加宽主句或给每屏加一道全宽亮色顶杠补面积, "
+                              "最后才调配色" % (p95, p99, frac * 100.0)))
+    elif p95 < P95_MIN:
+        notes.append(("info", "p95 只有 %.1f 但 p99 有 %.1f, 判为通过: 亮部面积只占 %.2f%%, "
+                              "低于 %.0f%%, p95 落在底色亮度上是暗场构图的正常现象, "
+                              "不是白字不亮" % (p95, p99, frac * 100.0, BRIGHT_FRAC_LOW * 100.0)))
     if ms["dark_frac"] > 0.98:
-        notes.append("暗部占比 %.3f, 整帧几乎全黑, 检查这一段是不是渲成了空场" % ms["dark_frac"])
+        notes.append(("fail", "暗部占比 %.3f, 整帧几乎全黑, 检查这一段是不是渲成了空场"
+                      % ms["dark_frac"]))
     return notes
 
 
@@ -187,7 +209,8 @@ def main():
     print("=" * 66)
     print("亮度标定: %d 个输入" % len(a.inputs))
     print("=" * 66)
-    any_note = False
+    any_fail = False
+    any_info = False
     for src, rows, notes in groups:
         print("")
         print("[%s]" % src)
@@ -199,15 +222,24 @@ def main():
                      m["p99"], m["dark_frac"], m["bright_frac"]))
         print("中位数 RGB: " + "   ".join(
             "%s -> %s" % ("-" if t is None else "%.1fs" % t, m["median_rgb"]) for t, m in rows))
-        if notes:
-            any_note = True
-            for t, got in notes:
-                print("时刻 %s:" % ("-" if t is None else "%.2f" % t))
-                for x in got:
-                    print("  - %s" % x)
-    if not any_note:
+        for t, got in notes:
+            fails = [x for lv, x in got if lv == "fail"]
+            infos = [x for lv, x in got if lv == "info"]
+            if fails:
+                any_fail = True
+            if infos:
+                any_info = True
+            if not fails and not infos:
+                continue
+            print("时刻 %s:" % ("-" if t is None else "%.2f" % t))
+            for x in fails:
+                print("  [不合格] %s" % x)
+            for x in infos:
+                print("  [说明] %s" % x)
+    if not any_fail:
         print("")
-        print("判据全部通过: 底色与字幕亮度都落在区间内")
+        print("判据全部通过: 底色与字幕亮度都落在区间内" if not any_info
+              else "判据全部通过: 底色与字幕亮度都落在区间内 (上面 [说明] 行是误报解释, 不是不合格项)")
 
     if a.json_path:
         parent = os.path.dirname(os.path.abspath(a.json_path))

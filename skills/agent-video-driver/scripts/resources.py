@@ -562,8 +562,10 @@ class ResourceReport:
                        % self.hw[0][0])
             out.append("  换路线之前必须先做    先量 PSNR 定画质底线, 再分离输入解码与滤镜与编码三者的"
                        "开销, 最后才动 preset 与编码器")
-            out.append("  原理提醒              x264 是纯 CPU 编码器, CUDA 加速不了它; 用 NVENC 等于"
-                       "换一个编码器, 画质会变")
+            out.append("  原理提醒              x264 是纯 CPU 编码器, CUDA 加速不了它; 换 NVENC 等于换"
+                       "一个编码器, 换完必须重新量 PSNR")
+            out.append("  别被换编码器吓住      实测在纯色块与文字为主的画面上, NVENC 的 PSNR 常高于 x264,"
+                       " 但同画质下体积显著更大, 取舍看体积判据")
         else:
             out.append("  可用硬件编码器        无, 编码走 CPU 路线 (libx264), 这是本技能的默认与验收口径")
             out.append("  这只影响速度          画面与配乐的能力完全不受影响, 不要为它改工序")

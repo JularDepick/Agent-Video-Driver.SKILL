@@ -23,13 +23,20 @@
   concat 列表里只写 basename, 列表与分段同目录
     列表里的相对路径是按"列表文件所在目录"解析的, 不是按进程的工作目录
 
+两道帧完整性硬闸 (实测踩过: 宿主强杀渲染进程会留下 0 字节 PNG, 而 ffmpeg 的 image2
+解复用器读到坏帧是**静默停止**的, 编码器只编到坏帧就退出 0, 数文件个数完全拦不住):
+  编码前按字节大小体检帧目录, 0 字节与明显偏小的帧直接点名并拒绝开工 (退出码 8)
+  编码后按 -progress 的 frame 计数逐批核对, 再对拼接结果核一次 nb_read_frames,
+    两者都必须等于计划帧数, 不一致即判定残片并拒绝交付 (退出码 8)
+
 状态文件 (缺省是脚本同目录的 assemble_state.json) 每完成一批原子写入一次, 内容含配置快照,
 批次表, 当前阶段, 已完成帧数与 pid; 重跑时自动跳过已完成批次, 配置与上次不一致时拒绝续跑,
 要重来必须显式加 --restart. --redo N 用来重做指定批次, 源帧改过时必须重编对应批次,
 否则视频里是旧帧, 磁盘上是新帧, PSNR 验收会假性崩掉.
 
 退出码: 0 成功; 2 用法错误; 3 等待用户二次确认; 4 探测判定应拦截; 5 真峰不合格;
-        6 编码或混音失败; 7 状态文件与本次配置不一致; 130 被中断 (断点已保留)
+        6 编码或混音失败; 7 状态文件与本次配置不一致; 8 帧完整性不合格 (残帧或帧数不足);
+        130 被中断 (断点已保留)
 """
 import argparse
 import json
@@ -46,6 +53,12 @@ STATE_NAME = "assemble_state.json"
 STATE_VERSION = 1
 # 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
 FRAME_PATTERN = "n%05d.png"
+# 帧文件字节数下限. 这条闸只拦"0 字节与只写了文件头就被截断"的坏帧, 不是画质判据
+# 阈值刻意压得很低: 低分辨率试渲染的合法帧可能只有几百字节, 定高了下会误报
+# 写到一半被截断但还能解码的帧拦不住, 那种交给编码后的 nb_read_frames 硬闸
+MIN_FRAME_BYTES = 128
+# 允许的帧数误差; 拼接与混音都可能引入 1 帧内的取整偏差, 超过 1 帧才算残片
+FRAME_TOLERANCE = 1
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -88,6 +101,57 @@ def missing_frames(frames, total):
     """返回 [0, total) 里缺掉的那个别帧号; 中间缺帧会让某一批编码中途失败"""
     return [i for i in range(int(total))
             if not os.path.exists(os.path.join(frames, FRAME_PATTERN % i))]
+
+
+def broken_frames(frames, total, min_bytes=None):
+    """
+    返回 (帧号, 字节数) 列表, 收录 0 字节与小于 min_bytes 的帧
+
+    必须单独做这一道: 数个数与查存在性都拦不住坏帧. ffmpeg 的 image2 解复用器读到
+    坏帧是静默停止的, 编码器只编到坏帧就退出 0, 于是"帧数全在"却交付一条半长残片
+    """
+    if min_bytes is None:
+        min_bytes = MIN_FRAME_BYTES
+    out = []
+    for i in range(int(total)):
+        p = os.path.join(frames, FRAME_PATTERN % i)
+        try:
+            n = os.path.getsize(p)
+        except OSError:
+            n = 0
+        if n < min_bytes:
+            out.append((i, n))
+    return out
+
+
+def report_broken(frames, bad, min_bytes=None):
+    """把坏帧点名打印出来, 供人工重渲这几个帧号"""
+    if min_bytes is None:
+        min_bytes = MIN_FRAME_BYTES
+    head = ", ".join("%s (%d 字节)" % (FRAME_PATTERN % i, n) for i, n in bad[:8])
+    more = "" if len(bad) <= 8 else " 等 %d 处" % len(bad)
+    print("错误: 帧目录 %s 里有 %d 个坏帧 (0 字节或小于 %d 字节): %s%s"
+          % (frames, len(bad), min_bytes, head, more))
+    print("  坏帧通常来自渲染进程被宿主强杀: 文件建了但内容没写完")
+    print("  处置: 用 scene_module.py at <段>:<拍> 或分段重渲补上这几个帧号, 再回来编码;")
+    print("        坏帧不补就开编, ffmpeg 会静默停在坏帧处并退出 0, 交付的是一条残片")
+    print("  阈值可调: --min-frame-bytes N (低分辨率试渲染的合法帧可能只有几百字节)")
+    print("  自查命令: python scripts/assemble_core.py --frames %s --probe-only" % frames)
+
+
+def probe_frame_count(path):
+    """
+    用 ffprobe 数一条 mp4 视频流里实际解码出的帧数 (nb_read_frames)
+
+    这是编码侧的最终硬闸: -progress 的 frame 计数只能反映编码器自报的进度,
+    对拼接结果再数一遍才能证明"计划多少帧, 成片里就是多少帧"
+    """
+    code, out = run([FFPROBE, "-v", "error", "-count_frames", "-select_streams", "v:0",
+                     "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", path])
+    if code != 0:
+        return None
+    m = re.search(r"(\d+)", out)
+    return int(m.group(1)) if m else None
 
 
 def plan_batches(total, n):
@@ -267,6 +331,7 @@ def encode_batch(cfg, lim, batch, seg_path, state, state_path):
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          text=True, encoding="utf-8", errors="replace")
     tail = []
+    encoded = 0
     last_write = time.time()
     for line in p.stdout:
         line = line.rstrip("\n")
@@ -276,6 +341,7 @@ def encode_batch(cfg, lim, batch, seg_path, state, state_path):
                 done = int(val)
             except ValueError:
                 continue
+            encoded = done
             batch["frames_done"] = done
             state["current_frame"] = start + min(done, count)
             state["done_frames"] = start + min(done, count)
@@ -291,7 +357,7 @@ def encode_batch(cfg, lim, batch, seg_path, state, state_path):
                 tail.pop(0)
     code = p.wait()
     batch["frames_done"] = count if code == 0 else batch.get("frames_done", 0)
-    return code, "\n".join(tail)
+    return code, "\n".join(tail), encoded
 
 
 def concat(cfg, lim, state, state_path):
@@ -490,6 +556,8 @@ def parse_args(argv):
     ap.add_argument("--redo", default="", help="重做指定批次, 逗号分隔, 例如 3 或 3,7")
     ap.add_argument("--restart", action="store_true", help="忽略上次进度, 全部重来")
     ap.add_argument("--probe-only", action="store_true", help="只探测并打印确认门")
+    ap.add_argument("--min-frame-bytes", type=int, default=MIN_FRAME_BYTES,
+                    help="帧文件字节数下限, 低于它判为坏帧 (缺省 %d)" % MIN_FRAME_BYTES)
     ap.add_argument("--yes", action="store_true", help="已经拿到用户确认, 直接开工")
     ap.add_argument("--force", action="store_true", help="探测判定应拦截时强行开工")
     return ap.parse_args(argv)
@@ -517,6 +585,12 @@ def main(argv=None):
               % (total, len(miss), head, more))
         print("  中间缺帧会让对应批次编码中途失败; 补渲缺的帧, 或把完整帧目录放回来")
         return 2
+
+    # 帧数齐不等于帧可用: 被强杀的渲染进程会留下 0 字节 PNG, 而 ffmpeg 读到坏帧是静默停止的
+    bad = broken_frames(a.frames, total, a.min_frame_bytes)
+    if bad:
+        report_broken(a.frames, bad, a.min_frame_bytes)
+        return 8
 
     report, _ = probe_limits(cfg)
     lim = resolve_limits(cfg, report)
@@ -625,7 +699,7 @@ def main(argv=None):
             b["t0"] = time.time()
             state["note"] = "编码第 %02d 批, 帧 %d 到 %d" % (b["index"], b["start"], b["end"])
             write_state(state_path, state)
-            code, tail = encode_batch(cfg, lim, b, b["seg"], state, state_path)
+            code, tail, encoded = encode_batch(cfg, lim, b, b["seg"], state, state_path)
             b["seconds"] = round(time.time() - b["t0"], 1)
             b["t0"] = None  # 结算完清成显式 None: 硬杀后前端见到 running 无 t0 就知道是残留
             if code != 0:
@@ -638,6 +712,21 @@ def main(argv=None):
                       % (b["index"], b["start"], b["end"], code))
                 print(tail[-1200:])
                 return 6
+            # 退出码 0 不代表编满了: image2 解复用器遇到坏帧会静默停止, 编码器照样退出 0
+            want = b["end"] - b["start"]
+            if encoded != want:
+                b["status"] = "failed"
+                state["stage"] = "failed"
+                state["note"] = "第 %02d 批帧数不足" % b["index"]
+                state["error"] = "计划 %d 帧, 实编 %d 帧" % (want, encoded)
+                write_state(state_path, state)
+                print("错误: 第 %02d 批只编出 %d 帧, 计划 %d 帧 (帧 %d 到 %d), 差 %d 帧"
+                      % (b["index"], encoded, want, b["start"], b["end"], want - encoded))
+                print("  这是残帧的典型症状: 该批第 %d 帧附近有 0 字节或截断的 PNG,"
+                      % (b["start"] + encoded))
+                print("  ffmpeg 的 image2 解复用器读到坏帧会静默停止, 但退出码仍是 0")
+                print("  处置: 按上面的帧号重渲该帧, 再回来 --redo %d 重编这一批" % b["index"])
+                return 8
             b["status"] = "done"
             b["frames_done"] = b["end"] - b["start"]
             b["bytes"] = os.path.getsize(b["seg"]) if os.path.exists(b["seg"]) else 0
@@ -660,6 +749,24 @@ def main(argv=None):
             print("拼接失败, 退出码 %d" % code)
             print(out[-1200:])
             return 6
+
+        # 拼接后的最终硬闸: 对整条视频流数一次 nb_read_frames, 与计划帧数对齐才允许进入混音
+        # 逐批的 frame 计数只看编码器自报, 数拼接结果才能证明成片真的是计划帧数
+        got = probe_frame_count(cfg["video_only"])
+        want = cfg["total_frames"]
+        if got is None:
+            print("警告: 拼接结果数不出帧数 (nb_read_frames), 帧完整性未能核对")
+        elif abs(got - want) > FRAME_TOLERANCE:
+            state["stage"] = "failed"
+            state["error"] = "拼接结果 %d 帧, 计划 %d 帧" % (got, want)
+            write_state(state_path, state)
+            print("错误: 拼接结果只有 %d 帧, 计划 %d 帧, 差 %d 帧"
+                  % (got, want, want - got))
+            print("  成片会是残片, 拒绝进入混音; 按上面的差量补渲缺的帧或重编对应批次")
+            return 8
+        else:
+            state["frames_verified"] = got
+            print("[2/4] 帧完整性核对: 拼接结果 %d 帧, 计划 %d 帧, 一致" % (got, want))
 
         state["stage"] = "mux"
         state["note"] = "混音与响度归一"

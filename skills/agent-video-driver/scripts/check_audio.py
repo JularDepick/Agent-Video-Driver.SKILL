@@ -2,10 +2,13 @@
 """
 配乐客观检查: 卡点, 频段, 脉冲, 单调性一次跑完
 
-  python scripts/check_audio.py audio/score.wav 100
-  python scripts/check_audio.py audio/score.wav 100 --quick
-  python scripts/check_audio.py audio/score.wav 100 --from 120 --to 180
-  python scripts/check_audio.py audio/score.wav 100 --engine keyboard
+  python scripts/check_audio.py audio/score.wav --bpm 100
+  python scripts/check_audio.py audio/score.wav --bpm 100 --quick
+  python scripts/check_audio.py audio/score.wav --bpm 100 --from 120 --to 180
+  python scripts/check_audio.py audio/score.wav --bpm 100 --engine keyboard
+
+BPM 两种写法都收: 长选项 --bpm (与 timing.py 一致, 推荐) 与位置参数 `file bpm`;
+同时给时以 --bpm 为准, 都不给按 100 算.
 
 调参迭代时不必每次都量全片: --quick 只跑拍点与折叠包络两项主判据, --from/--to 只量一段.
 判据见 references/audio-engine.md.
@@ -26,14 +29,22 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="配乐客观检查: 卡点, 频段, 脉冲, 单调性")
     ap.add_argument("file", nargs="?", default=os.path.join("audio", "score.wav"),
                     help="要检查的 WAV, 缺省 audio/score.wav")
-    ap.add_argument("bpm", nargs="?", type=float, default=100.0, help="BPM, 缺省 100")
+    ap.add_argument("bpm", nargs="?", type=float, default=None,
+                    help="BPM 的位置参数写法, 缺省 100; 与 --bpm 等价, 同时给以 --bpm 为准")
+    ap.add_argument("--bpm", dest="bpm_opt", type=float, default=None,
+                    help="BPM, 缺省 100; 与 timing.py 的长选项口径一致, 推荐用这个")
     ap.add_argument("--from", dest="t_from", type=float, default=None, help="只量从这一秒起")
     ap.add_argument("--to", dest="t_to", type=float, default=None, help="只量到这一秒为止")
     ap.add_argument("--quick", action="store_true",
                     help="只跑拍点与折叠包络两项主判据, 跳过频段与单调性")
     ap.add_argument("--engine", choices=("orchestra", "keyboard"), default="orchestra",
                     help="按引擎取拍点峰值比的判据档: 管弦乐 1.3, 键盘与电子 1.8")
-    return ap.parse_args(argv)
+    a = ap.parse_args(argv)
+    if a.bpm_opt is not None:
+        a.bpm = a.bpm_opt
+    elif a.bpm is None:
+        a.bpm = 100.0
+    return a
 
 
 def resolve(path):

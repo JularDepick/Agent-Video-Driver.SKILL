@@ -25,9 +25,17 @@ metadata:
 |:---:|:---|
 | Token 消耗 | 单条 30s 片约 5 到 10 万 output token, 90s 以上分段片更高, 长会话缓存命中也会累计到百万级 |
 | 中间帧图片 | 30s@30fps 约 900 张 PNG, 1080p 下约 200MB, 90s 以上约 3000 张 |
-| 渲染耗时 | 1080p@30fps 约 0.08 到 0.12 秒每帧, 单进程 3000 帧约 5 分钟 |
+| 渲染耗时 | 1080p@30fps 约 0.08 到 0.12 秒每帧, 单进程 3000 帧约 5 分钟 (前提见下) |
 | 机器占用 | 全量渲染与最终合成都会长时间吃满 CPU, 开发机上会明显卡顿, 按限额跑可以缓解 |
 | 会话占用 | 一个会话只做一个视频任务, 中途插入别的任务会污染上下文并拖慢每一步 |
+
+渲染耗时那一行有前提, 报价前必须自己量: 0.08 到 0.12 秒每帧对应的是**每帧约 20 到 40 个绘制调用**的场景. 场景更重时按实测折算, 不要直接引用上表的数字:
+
+```
+python scene_module.py at <段>:<拍>     # 渲一帧并计时
+```
+
+实测有一轮每幕都要重绘网格 (约 30 条线) 加四角刻度加顶杠加多组图形, 单帧落在 **0.25 秒**, 是标称值的 2 到 3 倍. 这不是标称值错了, 是负载档位不同. 单帧成本的拆解口径与自查方法见 `references/performance.md`.
 
 确认不再一次问完, 而是分三张单在需要答案的那一刻问 (模板在 `templates/`, 复制到工作目录的 `prompts/`):
 
@@ -194,7 +202,8 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 | `scripts/new_project.py` | 起一个新工程: 建目录, 复制脚本成自包含副本, 生成四份骨架并写好顶部常量; `--aspect 16:9|9:16|1:1` 或 `--width/--height` 定画幅, 随 `--bpm --dur --fps` 一起写进场景模块 |
 | `scripts/resources.py` | 重活前的资源探测与限额建议: 核数, 负载, 内存, 磁盘, 建议线程数与编码预设 |
 | `scripts/perf_probe.py` | 单帧成本探针: 把一帧按 Pillow 矢量与文字, numpy 后期, 3D 点云, PNG 落盘四段拆开计时, 给绝对毫秒与占比, 并附算子对照表 (配套口径见 `references/performance.md`) |
-| `scripts/check_text.py` | 字形体检: 位图比对找出会变豆腐块的字符; `--from-plan` 读计划屏文字, `--from-source` 用 ast 抽场景模块字符串字面量 |
+| `scripts/check_text.py` | 字形体检: 位图比对找出会变豆腐块的字符; `--from-plan` 读计划屏文字, `--from-source` 用 ast 抽场景模块字符串字面量 (默认跳过 docstring, 加 `--with-docstring` 收全量); 加 `--drawn-only` 只收画字调用的实参并按键分组体检, 项目自定义封装用 `--call-kind caption=cnb` 声明字体键 |
+| `scripts/check_layout.py` | 版面静态体检: 从场景模块抽出全部 `text` / `text_fit` / `text_cap` / `rich` 调用, 按真实墨迹算墨迹框, 报硬撞 (退出码 1), 太挤与未解析三类; 只在同一函数内两两比较, 互斥的 `sub(t)` 分支只提示 |
 | `scripts/beats.py` | 从音频反推 BPM, 拍点, 小节线, 逐小节响度变化 |
 | `scripts/loops.py` | 找音乐接缝: 比较各小节频谱, 列出可无缝重复或剪掉的小节区间 |
 | `scripts/cutmusic.py` | 按小节剪辑用户自备音乐, 接缝落在精确的小节线上 |
@@ -217,11 +226,11 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 | `scripts/render_parallel.py` | 并行渲染包装器: 按建议进程数起独立子进程各渲各的帧区间, 轮询汇总进度 |
 | `scripts/fonts.py` | 字体探测: 跨平台找中文字体与等宽字体, 生成 FONT_PATH 片段, 支持环境变量目录与 fc-list |
 | `scripts/check_redaction.py` | 去敏反查: 从原始产物自动推导禁用词, 对交付目录全文反查, 命中只报形态与位置 |
-| `scripts/brightness.py` | 亮度标定: 量均值, 中位数与 p95, 支持一次多张输入与 markdown 落表, 可与参考片同位置对比 |
-| `scripts/qa.py` | 按 plan.json 逐屏抽帧与总览: 输入给成片做编码后验收, 给帧目录做编码前逐屏终检; 逐屏表带幕号与 p95 |
+| `scripts/brightness.py` | 亮度标定: 量均值, 中位数, p95 与 p99, 支持一次多张输入与 markdown 落表, 可与参考片同位置对比; 亮部判据取 p95 与 p99 达标其一, 暗场少亮元素的构图不再误报 |
+| `scripts/qa.py` | 按 plan.json 逐屏抽帧与总览: 输入给成片做编码后验收, 给帧目录做编码前逐屏终检; 逐屏表带幕号, p95 与相邻屏 MAE 自动判定, 帧序列模式下先查帧目录是否正在被重渲 |
 | `scripts/tokens.py` | 统计本会话 token 与成本, 供片尾字幕使用 |
-| `scripts/assemble.ps1` | 编码, 混音, 响度归一, 从成片解码回来量真峰, 质检 |
-| `scripts/assemble_core.py` | 分批编码合成的后端: 切片编码, 无损拼接, 断点续跑, 进度原子写 JSON, `--redo` 重编指定批次, 帧空洞与批次自检, 质检值写状态文件 |
+| `scripts/assemble.ps1` | 编码, 混音, 响度归一, 从成片解码回来量真峰, 质检; 开工前按字节体检帧目录, 编码后核对 `nb_read_frames` (两道帧完整性硬闸) |
+| `scripts/assemble_core.py` | 分批编码合成的后端: 切片编码, 无损拼接, 断点续跑, 进度原子写 JSON, `--redo` 重编指定批次, 帧空洞与批次自检, 两道帧完整性硬闸 (编码前字节体检加编码后 `nb_read_frames` 核对), 质检值写状态文件 |
 | `scripts/assemble_progress.py` | 分批合成的进度前端: 只读轮询状态文件画进度条与批次表, 不启停后端 |
 | `scripts/bench_encode.py` | 编码路线对比: 先量输入侧解码与滤镜开销, 再比各档编码器的耗时, 体积与 PSNR |
 | `templates/theme.py` | 工程级配置模板: 身份与署名, 时间网格, 画幅, 色板, 字体与字号, 幕表; 由 `new_project.py` 复制到工程根并按命令行参数写好, 场景模块优先从它取值 |
@@ -234,7 +243,7 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 | `templates/stage-prompt.md` | 阶段提示词模板, 七模块 |
 | `templates/screen-script.md` | 屏文案表模板, timing.py 的输入 |
 
-画面默认走 Python + Pillow 逐帧渲染. 浏览器渲染路线在受限沙箱下不可用, 原因与规避见 `references/pitfalls.md`.
+画面默认走 Python + Pillow 逐帧渲染. 浏览器渲染路线在受限沙箱下不可用, 原因与规避见 `references/pitfalls.md`; 实测到的启动退出码 (0xFFFF7001, 0x80000003) 的排查清单由 `scripts/check_env.py` 按码打印, 该路线不可用时十阶段流程一步都不受影响, 全程用 Pillow 路线即可交付.
 
 ## 六, 内容底线 (Must hold, 四条不可协商)
 
@@ -245,7 +254,7 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 
 判定规则, 汇报格式与发布前清单见 `references/content-and-rights.md`.
 
-## 七, 二十四条工程铁律 (都是踩过的坑)
+## 七, 二十六条工程铁律 (都是踩过的坑)
 
 1. 先定声音设计表 (每段的环境层, 拟音层与配乐状态) 与配乐, 再做画面, 画面切点必须等于配乐切点, 不要反过来迁就画面
 2. 所有入场动画以拍为单位写死, 禁止用秒数近似, 卡点差一帧观众就能看出来
@@ -271,6 +280,8 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 22. 源帧改过就必须重编受影响批次 (分批路线用 `--redo N`), 动手前先确认改的帧落在哪个批次 (`scene_module.py screen N` 反查), 否则视频里是旧帧而磁盘上是新帧, PSNR 验收会假性崩掉
 23. 换编码路线有固定顺序: 先量 PSNR 定画质底线, 再分离解码与滤镜与编码三段开销, 最后才动 preset 与编码器; x264 是纯 CPU 编码器, CUDA 加速不了它, 换 NVENC 等于换编码器, 换完必须重量 PSNR
 24. 转场不要用噪声 whoosh: 实测 84 秒里放了 29 个, 反馈是"一开始酷, 后来烦"; 改用和弦 swell, 钟声 bloom, 滑音 glide, 琶音 harp, 并且约一半切点留空 (由下一场的入场声带出切点), 全片至少两处真实静默
+25. **同一屏内多块文字的墨迹区间不得相交**, 纵向留白按真实墨迹算而不是按字高带: 中文字形墨迹约为字号的 1.0 倍, 而 `cap_metrics` 量的拉丁字母 H 只有约 0.72 倍, 拿字高带反推相邻元素的间距必然重叠 (实测标题卡两行重叠 3.5px, 另一处一行调试残留大字与公式完全叠画, 而字符图当时看不出). 编码前用 `check_layout.py` 静态过一遍, 两个中文大字块之间至少留 `0.15 x 前一块字号`
+26. **帧数齐不等于帧可用**: 宿主强杀渲染进程会留下 0 字节 PNG, 而 ffmpeg 的 image2 解复用器读到坏帧是**静默停止**的, 编码器只编到坏帧就退出 0, 数文件个数拦不住 (实测差点交付一条 46.9 秒的"150 秒成片"). 编码前必须按字节体检帧目录, 编码后必须按 `nb_read_frames` 核对帧数, 两道都过才允许混音; 中断之后重跑之前先做这道体检, 脚本已内建 (见 `references/workflow.md` 阶段 7)
 
 完整坑表与复现条件见 `references/pitfalls.md`, 文本编码见 `references/text-and-encoding.md`.
 
@@ -282,7 +293,9 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 |:---:|:---|:---:|:---|
 | 字形 | 渲染期审计报告里没有"回退链也找不到字形"的项 | 渲染期 | 审计报告, 渲染前用 `check_text.py` |
 | 构图 | 每个段落至少抽 2 帧做字符图核对, 每屏至少 1 帧进总览图 | 渲染期与逐屏终检 | `preview.py` 加 `qa.py` 帧序列模式 |
-| 逐屏亮度 | 逐屏表无空场 (平均亮度不低于 3) 与偏暗屏 (p95 不低于 120) | 逐屏终检, 编码前 | `qa.py` 帧序列模式, 补量用 `brightness.py --md` |
+| 版面 | 同一函数内没有文本块的墨迹框相交, 未解析项已逐条核对 | 渲染前与逐屏终检 | `check_layout.py` |
+| 逐屏亮度 | 逐屏表无空场 (平均亮度不低于 3), 无偏暗屏 (p95 与 p99 达标其一, 两个都低于 120 才算偏暗), 相邻屏 MAE 不低于 1.0 | 逐屏终检, 编码前 | `qa.py` 帧序列模式, 补量用 `brightness.py --md` |
+| 帧完整性 | 编码前无 0 字节帧, 编码后 `nb_read_frames` 等于计划帧数 (差不超过 1 帧) | 编码前与编码后 | `assemble_core.py --probe-only`, 编码脚本内建两道闸 |
 | 异常屏定位 | 每个异常屏都反查过幕号与场景函数, 不凭幕号猜 | 逐屏终检 | `scene_module.py screen N` |
 | 时长 | 精确到帧, 30s 片必须 30.000s | 编码后 | `qa.py` 成片模式加 ffprobe |
 | 卡点 | 逐帧差分峰值落在小节线正负 1 帧内, 且锚点屏的前后帧差异峰值落在切点帧 | 编码后 | `qa.py --anchor` |

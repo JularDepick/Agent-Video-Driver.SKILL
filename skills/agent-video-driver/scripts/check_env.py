@@ -77,6 +77,33 @@ def probe_browser(path):
     return True, ""
 
 
+# 实测遇到过的浏览器启动退出码与对应排查路径
+# 0xFFFF7001 与 0x80000003 都出现在 Playwright 自带内核上, 都是宿主环境问题, 不是技能的问题
+BROWSER_HINTS = {
+    "0xFFFF7001": [
+        "Playwright 自带 chromium 的常见症状, 按这个顺序查:",
+        "  1 缺 VC++ 运行库: 装 Microsoft Visual C++ 2015-2022 Redistributable (x64) 后重试",
+        "  2 依赖没装全: python -m playwright install-deps (Linux) 或 python -m playwright install chromium",
+        "  3 杀软或企业策略拦了未签名子进程: 换系统自带的 Edge 或 Chrome 试一次, 能起就说明是拦截",
+        "  4 用户数据目录不可写: 探测时已经把 --user-data-dir 指到 temp/browser_probe 下了",
+    ],
+    "0x80000003": [
+        "STATUS_BREAKPOINT, headless_shell 被拦或被改写的典型症状, 按这个顺序查:",
+        "  1 杀软或 EDR 拦了 headless_shell 这类无窗口进程, 把它的目录加白名单后重试",
+        "  2 换 --headless=old 或改用系统自带的 Edge 试一次, 能起就说明是内核文件被拦",
+        "  3 确认 Playwright 版本与内核版本配套: python -m playwright install --force chromium",
+    ],
+}
+
+
+def browser_hint(why):
+    """按退出码取排查清单; 取不到返回空表"""
+    for code, lines in BROWSER_HINTS.items():
+        if code in why:
+            return lines
+    return []
+
+
 def main():
     print("=" * 62)
     print("Agent-Video-Driver 环境探测")
@@ -201,6 +228,7 @@ def main():
     if not browsers:
         print("%s 浏览器内核 未找到 chrome / msedge / chromium 与 Playwright 内核" % NO)
     alive = 0
+    hints = []
     for name, path in browsers:
         ok, why = probe_browser(path)
         if ok:
@@ -208,6 +236,9 @@ def main():
             print("%s %-26s 可启动" % (OK, name))
         else:
             print("%s %-26s 不可启动 (%s)" % (NO, name, why))
+            for h in browser_hint(why):
+                if h not in hints:
+                    hints.append(h)
         print("    %s" % path)
 
     if alive:
@@ -215,6 +246,13 @@ def main():
     else:
         print("结论: 浏览器不可启动, 画面只能走 Python + Pillow 的逐帧渲染路线 (本技能默认路线)")
         print("      浏览器渲染路线在本环境下不可用, 不要按 HTML/CSS/JS 出片去安排工序")
+        print("      影响范围: 十阶段流程一步都不受影响, 全程用 Pillow 路线即可交付;")
+        print("                只有想走 HTML/CSS 出片这条路时才需要先修好它")
+        if hints:
+            print("")
+            print("排查清单 (按上面实测到的退出码给):")
+            for h in hints:
+                print("  %s" % h)
 
 
 if __name__ == "__main__":

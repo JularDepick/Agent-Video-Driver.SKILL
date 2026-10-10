@@ -74,6 +74,20 @@ python scripts/check_text.py --font cnb "iPr₂Zn" "¹³C / ¹⁸O" "≈¥0.05"
 python scripts/check_text.py --font mono "iPr₂Zn"
 ```
 
+从场景模块批量体检时用 `--from-source`, 并按场景模块的大小选精度档:
+
+```
+python scripts/check_text.py --from-source scene_module.py                    # 默认跳过 docstring
+python scripts/check_text.py --from-source scene_module.py --drawn-only       # 只收画字调用的实参, 按键分组
+python scripts/check_text.py --from-source scene_module.py --drawn-only \
+    --call-kind caption=cnb --call-kind section=cnb                           # 声明自定义封装的字体键
+```
+
+- 默认档会连 `print` 的 CLI 提示与报错文案一起抽进来, 它们在等宽字体下必然"缺字形"
+- `--drawn-only` 把非上屏字面量滤掉, 并尽量连字体键一起抽出来按键分组体检, 于是"中文文案去撞等宽字体"这类噪声也消失: 实测同一个模板从 164 段降到 26 段, 且零误报
+- 项目自定义封装内部用什么字体静态看不出来, 默认按全部字体键体检 (宁可多报不漏报); 用 `--call-kind NAME=KIND` 声明一次即可归零
+- `--with-docstring` 反过来把 docstring 也收进来, 只在排查"某段文字到底从哪来"时才用
+
 实测输出:
 
 ```

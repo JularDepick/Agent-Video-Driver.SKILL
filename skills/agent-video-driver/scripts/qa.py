@@ -17,6 +17,8 @@
   2 每屏抽 1 帧, 时间取 屏幕起点 + 0.8 * 屏时长, 避开入场动画未完成的那一段;
     时间已经越过片尾的屏进跳过清单, 于是短的试渲染也能对上整片的计划
   3 逐屏表带幕号 (凭幕号猜屏号是返工根源, 反查用 scene_module.py screen N), 带 p95
+     与上一屏的 MAE 列带自动判定: 低于 1.0 提示"几乎一样", 低于 0.3 提示"疑似重复屏";
+     帧序列模式开跑前先查帧目录是否正在被重渲, 正在重渲时打印醒目警告 (那时的表不可信)
   4 成片模式: 锚点屏抽 切点前一帧 与 切点后一帧, 用 Pillow 算 MAE 与平均亮度差,
     并与该屏前后普通帧对的水平对比, 看变化是不是正好落在切点帧上;
     锚点屏前后各 3 帧算相邻帧差分, 打印成一行数列, 峰值落在切点帧上才算卡点对齐
@@ -38,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import numpy as np
 
@@ -57,6 +60,13 @@ SHEET_PAD = 8
 LABEL_H = 22
 TOL_FRAMES = 1.0
 MAE_RATIO = 3.0
+# 相邻屏 MAE 的自动判定线: 逐屏表只出数不判定时靠人看表, 实测有两屏主句写重复了
+# 而 MAE 只有 0.28 却没人发现; 这两档给的是提示, 不是硬闸
+MAE_NEAR_SAME = 1.0
+MAE_DUPLICATE = 0.3
+# 帧序列模式的重渲预警: 帧目录里最近这么多秒被改写过的帧超过该比例时, 逐屏表不可信
+REWRITE_WINDOW_S = 60.0
+REWRITE_FRAC = 0.05
 # 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
 FRAME_PATTERN = "n%05d.png"
 FONTS = (r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\consolab.ttf")
@@ -404,12 +414,45 @@ def p95_of(l):
     return float(np.percentile(l, 95))
 
 
+def warn_if_rewriting(frames_dir):
+    """
+    帧序列模式下, 先看帧目录是不是正在被重渲
+
+    正在重渲时逐屏表会读到新旧混合的帧, 给出的是假阳性: 实测有一轮改了顶杠后重渲
+    9360 帧, 重渲中途跑逐屏表读出 3 屏 p95 不达标, 等全部渲完再跑这三屏全部达标,
+    中间白查了一轮"为什么顶杠没生效". 表是编码前最后一道闸, 假阳性会把人引向错方向
+    """
+    if not os.path.isdir(frames_dir):
+        return
+    now = time.time()
+    total = 0
+    recent = 0
+    for name in os.listdir(frames_dir):
+        if not (name.startswith("n") and name.endswith(".png")):
+            continue
+        p = os.path.join(frames_dir, name)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        total += 1
+        if now - st.st_mtime <= REWRITE_WINDOW_S:
+            recent += 1
+    if total and recent / float(total) > REWRITE_FRAC:
+        print("")
+        print("[警告] 帧目录里有 %d/%d 帧在过去 %.0f 秒内被改写, 可能正在重渲中,"
+              % (recent, total, REWRITE_WINDOW_S))
+        print("       此刻的逐屏表不可信 (会读到新旧混合的帧, 出的是假阳性);")
+        print("       请等渲染进程全部退出后再跑一次本命令")
+
+
 def screen_table(got):
     """屏号 | 幕 | 时间 | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏的 MAE"""
     print("")
     print("屏号 | 幕 | 时间s | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏MAE")
     prev = None
     rows = []
+    suspects = []
     for it in got:
         a = load_rgb(it["path"])
         l = lum_of(a)
@@ -417,15 +460,30 @@ def screen_table(got):
         p95 = p95_of(l)
         bright = float((l > 140).mean())
         d = None if prev is None else mae(a, prev)
+        mark = ""
+        if d is not None:
+            if d < MAE_DUPLICATE:
+                mark = "  <- 疑似重复屏"
+                suspects.append((it["n"], d, "重复"))
+            elif d < MAE_NEAR_SAME:
+                mark = "  <- 相邻屏几乎一样"
+                suspects.append((it["n"], d, "几乎一样"))
         rows.append({"n": it["n"], "t": it["t"], "path": it["path"],
                      "mean": mean, "p95": p95, "bright": bright, "mae_prev": d,
                      "text": it["text"], "act": it.get("act", ""),
                      "act_title": it.get("act_title", ""), "scene": it.get("scene", "")})
         prev = a
-        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %8.3f | %s"
+        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %8.3f | %s%s"
               % (it["n"], ("%2d" % it["act"]) if it.get("act") else " -",
                  it["t"], it["path"], mean, p95, bright,
-                 "-" if d is None else "%8.2f" % d))
+                 "-" if d is None else "%8.2f" % d, mark))
+    if suspects:
+        print("")
+        print("相邻屏 MAE 自动判定 (低于 %.1f 提示几乎一样, 低于 %.1f 提示疑似重复):"
+              % (MAE_NEAR_SAME, MAE_DUPLICATE))
+        for n, d, kind in suspects:
+            print("  屏 %d 与上一屏 MAE = %.2f, %s; 反查用 scene_module.py screen %d"
+                  % (n, d, kind, n))
     return rows
 
 
@@ -539,6 +597,8 @@ def main(argv=None):
     print("")
     print("逐屏抽帧: 时间取 屏幕起点 + 0.8 * 屏时长, 宽 %d" % SCREEN_W)
     if frames_mode:
+        # 先查帧目录是不是正在被重渲, 免得拿新旧混合的帧出一张假阳性的表
+        warn_if_rewriting(a.video)
         got, skipped = extract_from_frames(a.video, plan["screens"], fps, dur)
     else:
         got, skipped = extract_screens(a.video, plan["screens"], dur, a.out, fps)
