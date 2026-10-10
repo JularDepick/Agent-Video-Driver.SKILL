@@ -178,7 +178,7 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 - 不刺耳: 音色靠谐波堆叠而非宽带噪声, 实测刺耳区 (2 到 6kHz) 占比 0.9%, 谱心 317Hz
 - 不单调: 按切点分段的配器表 (段数超过表行数时循环取用) 加动机变奏加力度弧线, 实测每 10 秒 RMS 起伏 4.02 倍, 折叠包络起伏 0.61; 长片的末段同样有节奏层, 实测 480 秒片的最后 120 秒起伏 0.65
 
-需要更轻更现代的听感时才换 `scripts/music.py` 的键盘与电子音色.
+需要更轻更现代的听感时才换 `scripts/music.py` 的键盘与电子音色, 它同样吃这张意图表 (参数与意图名逐字一致, 只是映射到键盘音色).
 无论用哪套, 都不许出现这三种情况: 全片一套配置跑到底, 高频占比过半, 或持续声部盖住拍点.
 
 配乐结构由**小节意图表**决定 (一小节一行: 留白, 引子, 铺垫, 推进, 全奏, break, 回落, rise, 收束, 尾音), 不再只按画面切点循环取配器表: 段落意图与位置绑定, 音乐才有自己的结构.
@@ -193,6 +193,7 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 | `scripts/check_env.py` | 探测 ffmpeg, Python 库, 字体, 磁盘, 沙箱限制, 渲染路线可用性 |
 | `scripts/new_project.py` | 起一个新工程: 建目录, 复制脚本成自包含副本, 生成四份骨架并写好顶部常量; `--aspect 16:9|9:16|1:1` 或 `--width/--height` 定画幅, 随 `--bpm --dur --fps` 一起写进场景模块 |
 | `scripts/resources.py` | 重活前的资源探测与限额建议: 核数, 负载, 内存, 磁盘, 建议线程数与编码预设 |
+| `scripts/perf_probe.py` | 单帧成本探针: 把一帧按 Pillow 矢量与文字, numpy 后期, 3D 点云, PNG 落盘四段拆开计时, 给绝对毫秒与占比, 并附算子对照表 (配套口径见 `references/performance.md`) |
 | `scripts/check_text.py` | 字形体检: 位图比对找出会变豆腐块的字符; `--from-plan` 读计划屏文字, `--from-source` 用 ast 抽场景模块字符串字面量 |
 | `scripts/beats.py` | 从音频反推 BPM, 拍点, 小节线, 逐小节响度变化 |
 | `scripts/loops.py` | 找音乐接缝: 比较各小节频谱, 列出可无缝重复或剪掉的小节区间 |
@@ -207,7 +208,7 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 | `scripts/dsp.py` | 共享 DSP 基元: 滤波, 混响, 总线压缩, 暖调母带, 写 WAV |
 | `scripts/psnr_check.py` | PSNR 复测: 固定输入顺序与参照物口径, 对视频流或成片随时复量, 帧空洞先拦截 |
 | `scripts/orchestra.py` | 管弦乐配乐引擎 (默认推荐), 编排走逐小节意图表 (`--arrange` / `--arrange-file` / `--arrange-fill`), 支持 `--sr` 降采样与 `--chunk` 分段写盘 |
-| `scripts/music.py` | 键盘与电子配乐引擎 (备选) |
+| `scripts/music.py` | 键盘与电子配乐引擎 (备选), 吃与管弦乐同一张逐小节意图表 (`--arrange` / `--arrange-file` / `--arrange-fill`), 不给意图表时与旧版逐样本一致 |
 | `scripts/sfx.py` | 音效轨混音: 自产拟音 (swell, bloom, glide, harp, thump, paper, noise_bed 等) 与用户素材按 cue 表混成一条轨, 附带稀疏度, whoosh 次数与最长留白自查 |
 | `scripts/check_audio.py` | 配乐客观检查: 卡点, 频段, 脉冲, 单调性一次跑完 |
 | `scripts/audio_env.py` | 音频包络导出: 逐帧 RMS, 平滑包络, 四段频段占比与逐小节曲线, 供画面按帧取用, 并给出建议钉关键句的小节号 |
@@ -312,6 +313,7 @@ python scripts/style_lottery.py --check             校验牌堆两张表是否�
 | 7 | `references/transitions.md` | 转场手法目录: 效果, 适用与实现要点, 选用纪律 | 写分镜选转场时 |
 | 8 | `references/audio-engine.md` | 两套配乐引擎, 音色库, 小节意图编排, 三层声音与拟音音色表, 音频包络回画面, 锚点先测后钉, 客观判据 | 做配乐与声音设计时 |
 | 9 | `references/visual-engine.md` | 画面引擎 API, 字号反解与字高对齐, 通用组件, 图表配方, 性能 | 写场景时 |
+| 9.5 | `references/performance.md` | 单帧成本实测口径: 四段分布, 逐算子对照, 该优化与不该优化的判据, 复测命令 | 画面太慢或要动性能时 |
 | 10 | `references/three-d.md` | 3D 点云渲染, 相机与光照, 隐藏线刻版, 性能与三条坑 | 需要立体感时 |
 | 11 | `references/print-engine.md` | 印刷与 riso 路线: 纸底, 网点, 叠印, 套印, 逐帧管线的组织 | 做印刷风格时 |
 | 12 | `references/text-and-encoding.md` | 三层编码关与字形体检 | 写任何上屏文本前 |
