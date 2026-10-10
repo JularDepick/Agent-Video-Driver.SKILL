@@ -35,7 +35,7 @@
       anchor="features"
       kicker="Features"
       title="技能里有什么"
-      lead="十六份方法论文档加三十一个脚本, 覆盖从拿到主题到交出成片的每一步."
+      lead="二十份方法论文档加三十五个脚本, 覆盖从拿到主题到交出成片的每一步."
     >
       <div class="grid">
         <article v-for="([name, desc], i) in CAPABILITIES" :key="i" class="card">
