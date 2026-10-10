@@ -4,7 +4,7 @@ description: 用脚本化工具链从零驱动一条可交付的音视频成片,
 whenToUse: 用户要求制作视频/短片/宣传片/讲解片/动态演示, 或要求把某个主题做成带配乐的音视频产物时
 metadata:
   author: JularDepick
-  version: 0.1.0
+  version: 0.2.0
   verified-on: windows / Python 3.13 / Pillow 12 / NumPy 2 / FFmpeg 7
   source-session: 坐标系与向量 30s 宣传片 + 2026 诺贝尔化学奖 108s 讲解片
 ---

@@ -5,4 +5,4 @@
 // 需要同步的地方 (这三处在仓库根侧, 不在站点构建范围内, 所以只能靠这条注释提醒):
 //   skills/agent-video-driver/SKILL.md 的 metadata.version
 //   README.md 与 README_en-US.md 的版本徽章
-export const SITE_VERSION = '0.1.0'
+export const SITE_VERSION = '0.2.0'

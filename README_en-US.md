@@ -2,7 +2,7 @@
 
 # Agent-Video-Driver.SKILL
 
-[![Version](https://img.shields.io/badge/Version-0.1.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/v0.1.0)
+[![Version](https://img.shields.io/badge/Version-0.2.0-green)](https://github.com/JularDepick/Agent-Video-Driver.SKILL/tree/v0.2.0)
 [![Copyright](https://img.shields.io/badge/Copyright-JularDepick-0066AA)](./COPYRIGHT)
 [![License](https://img.shields.io/badge/License-Apache--2.0-yellow)](./LICENSE)
 [![Website](https://img.shields.io/badge/Website-online-38BDF8)](https://julardepick.github.io/Agent-Video-Driver.SKILL/)
