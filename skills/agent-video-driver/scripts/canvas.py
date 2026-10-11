@@ -16,7 +16,7 @@ import math
 import sys
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageChops
+from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageFilter
 # 帧名与编码参数取自共享定义 (scripts/videoconf.py), 不在本文件另写一份
 
 # 把本文件所在目录挂进 sys.path: 共享模块 (videoconf / fontpaths) 必须能找到,
@@ -541,6 +541,24 @@ def G(x, y=None):
 
 
 # ----------------------------------------------------------------- canvas
+def mix(c1, c2, t):
+    """
+    两个颜色按 t 线性混合, t=0 取 c1, t=1 取 c2
+
+    visual-engine.md 的发光一节让"高光处向白偏移并降彩度"写成
+    mix(语义色, 白, 0.75), 但此前没有实现, 照文档写会直接 NameError.
+    颜色可以是三元组或四元组 (RGB / RGBA), 返回值与较长者同长; t 会被夹到 0 到 1.
+    """
+    t = clamp(t)
+    n = max(len(c1), len(c2))
+    out = []
+    for i in range(n):
+        a = c1[i] if i < len(c1) else c2[i]
+        b = c2[i] if i < len(c2) else c1[i]
+        out.append(int(round(a + (b - a) * t)))
+    return tuple(out)
+
+
 def _bbox(mask):
     """布尔或浮点遮罩的非空包围盒, 返回 (y0, y1, x0, x1); 全空时返回 None"""
     if not mask.any():
@@ -550,12 +568,88 @@ def _bbox(mask):
     return int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
 
 
+# 外部图片缓存: 一条片里同一张照片会被贴几百帧, 每帧重开重解码会让 IO 成为瓶颈.
+# 键是 (绝对路径, mtime, 目标宽, 目标高, fit), 改图后 mtime 变, 缓存自动失效.
+_img_cache = {}
+_IMG_CACHE_MAX = 64
+
+
+def load_external_image(path):
+    """
+    读一张外部图片并转成 RGBA, 返回 (PIL Image, 原始像素尺寸) 或 None
+
+    刻意不在这里抛异常: 图片缺失是用户工程里的常见状态 (素材还没放进来的那一帧),
+    让整条渲染流程崩掉不划算; 返回 None 由调用方决定是跳过还是报错.
+    真正要严格校验的场景走 check_redaction.py 的素材表, 那里有专门的报错路径.
+    """
+    try:
+        key = os.path.abspath(path)
+    except (TypeError, ValueError):
+        return None
+    try:
+        st = os.stat(key)
+    except OSError:
+        return None
+    ck = (key, st.st_mtime, st.st_size)
+    hit = _img_cache.get(ck)
+    if hit is not None:
+        return hit
+    try:
+        im = Image.open(key)
+        im.load()
+    except Exception:
+        return None
+    # EXIF 方向: 手机与相机存的照片靠 EXIF 标旋转, 不处理会横着贴进来
+    try:
+        from PIL import ImageOps
+        im = ImageOps.exif_transpose(im)
+    except Exception:
+        pass
+    im = im.convert("RGBA")
+    if len(_img_cache) >= _IMG_CACHE_MAX:
+        _img_cache.clear()
+    _img_cache[ck] = im
+    return im
+
+
+def _fit_image(im, tw, th, fit):
+    """把图片适配到 (tw, th) 像素: cover 铺满并居中裁切, contain 完整放进并居中"""
+    if im.size == (tw, th):
+        return im
+    if fit == "contain":
+        im2 = im.copy()
+        im2.thumbnail((tw, th), Image.LANCZOS)
+        out = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        out.paste(im2, ((tw - im2.width) // 2, (th - im2.height) // 2), im2)
+        return out
+    # cover: 先铺满再居中裁切 (按短边比例放大, 不会有变形)
+    scale = max(tw / float(im.width), th / float(im.height))
+    nw, nh = max(1, int(round(im.width * scale))), max(1, int(round(im.height * scale)))
+    big = im.resize((nw, nh), Image.LANCZOS)
+    x0, y0 = (nw - tw) // 2, (nh - th) // 2
+    return big.crop((x0, y0, x0 + tw, y0 + th))
+
+
+def _round_corners(im, rad):
+    """给 RGBA 图加圆角 (超采样域的像素半径), 圆外透明"""
+    w, h = im.size
+    if rad * 2 >= min(w, h):
+        return im
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=rad, fill=255)
+    out = im.copy()
+    out.putalpha(mask)
+    return out
+
+
 def _paste_rgb(img, out, box):
     x0, y0 = box[2], box[0]
     img.paste(Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB"), (x0, y0))
 
 
 class C:
+    # begin() 打开的层栈: 每项是一张与底板同尺寸的独立缓冲与其绘图器.
+    # 不 begin 时栈是空的, 绘制直接落在 self.img 上, 行为与本层引入前完全一致.
     def __init__(self):
         ensure_bg()
         self.img = BG.copy()
@@ -563,6 +657,54 @@ class C:
         self.zoom = 1.0
         self.dx = 0.0
         self.dy = 0.0
+        self._layers = []
+
+    def begin(self, size=None):
+        """
+        开一层独立缓冲, 其间的绘制都落在这一层上, 直到 end() 才合回
+
+        用途是"先画整层再整体处理": 例如先描边再填色 (顺序影响观感时),
+        或者要给整层统一透明度与混合模式 (fill 先填色, 再 begin 一层画描边,
+        end 时带 alpha 合回). 可嵌套, 但每层的 img 是一张全尺寸缓冲, 嵌套两层
+        以上会明显吃内存, 一般一层足够.
+
+        size 给 (宽, 高) 时开一块与画布无关的小缓冲 (像素坐标), 适合画图标块;
+        缺省是与画布同尺寸的层.
+        """
+        if size is None:
+            w, h = self.img.size
+        else:
+            w, h = int(size[0]), int(size[1])
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        self._layers.append((self.img, self.d, layer, ImageDraw.Draw(layer, "RGBA")))
+        self.img = layer
+        self.d = self._layers[-1][3]
+        return layer
+
+    def end(self, alpha=1.0, mode="over"):
+        """
+        收掉最近的一层, 按 alpha 与 mode 合回它下面那一层
+
+        mode 给 "over" (正常叠加) 或 "multiply" (乘法, 印刷与底纹常用).
+        alpha 是这一层整体的不透明度, 1 是原样. 没有开层时调用它直接返回,
+        不报错 (写成收尾习惯比写成防御分支好).
+        """
+        if not self._layers:
+            return
+        base, _d, layer, _ld = self._layers.pop()
+        if alpha < 0.995:
+            layer = layer.point(lambda v: int(v * clamp(alpha)))
+        if mode == "multiply":
+            # 乘法要按 alpha 加权: 半透明处不能把底下压全黑, 否则一层淡描边会糊成脏块
+            flat = Image.new("RGBA", base.size, (255, 255, 255, 255))
+            merged = ImageChops.multiply(flat, layer)
+            base = Image.composite(merged, base, layer.getchannel("A"))
+        else:
+            flat = base.convert("RGBA")
+            flat.alpha_composite(layer)
+            base = flat.convert("RGB")
+        self.img = base
+        self.d = ImageDraw.Draw(self.img, "RGBA")
 
     def cam(self, z=1.0, dx=0.0, dy=0.0):
         self.zoom = z
@@ -824,6 +966,135 @@ class C:
         sub = tile.crop((cx0 - x0, cy0 - y0, cx1 - x0, cy1 - y0))
         region = self.img.crop((cx0, cy0, cx1, cy1))
         self.img.paste(ImageChops.screen(region, sub), (cx0, cy0))
+
+    # -- 外部图片 ---------------------------------------------------------
+    def image(self, path, box, alpha=1.0, radius=0, fit="cover", shadow=None,
+              shadow_blur=18, shadow_offset=(0, 10), outline=None, ow=1.5,
+              oalpha=1.0):
+        """
+        把一张外部图片 (产品照, Logo, 界面截图, 图表导出图) 贴到画面上
+
+        这是本引擎唯一接外部位图的入口, 也是"素材纪律"三条 (放设备窗口框, 叠加
+        语义色框, 放大区域或图例) 唯一能落地的手段. 它之前一直缺位: 立项单允许
+        用户带图, 文档要求 Logo 用真素材, 但没有任何 API 能把图画进帧里.
+
+        box 取设计坐标 (x0, y0, x1, y1); fit 给 cover (铺满并居中裁切, 默认) 或
+        contain (完整放进框内并居中, 不裁切). radius 是圆角像素, 0 是直角.
+        alpha 是整图不透明度, 1 是原样. 其余参数:
+          shadow     底色, 给它就在框下画一层软投影; 内部卡片与产品图的常用做法
+          shadow_blur 投影扩散半径 (设计 px), 越大越柔
+          shadow_offset 投影偏移 (设计 px), 默认向下
+          outline/ow/oalpha  框线, 与 rrect 的同名参数同一套语义
+
+        坐标一律设计 px, 与其余绘图 API 相同; 超采样倍率在这里自动处理, 调用方
+        不要自己乘 SS. 贴进来的内容不受 check_layout 的容器档检查 (它只抽文字
+        调用), 所以贴图框的越界要自己核, 或用 --safe-margin 统一给安全边距.
+
+        带 alpha 的 PNG 原样保留透明; JPEG 这类无透明通道的格式按 alpha 整体调不透明.
+        """
+        im = load_external_image(path)
+        if im is None:
+            return None
+        x0, y0, x1, y1 = (float(v) for v in box)
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        bw, bh = max(1.0, x1 - x0), max(1.0, y1 - y0)
+        # 设计尺寸 -> 超采样像素; 至少 1 px, 否则重采样无意义
+        tw, th = max(1, int(round(bw * SS))), max(1, int(round(bh * SS)))
+        tile = _fit_image(im, tw, th, fit)
+        if alpha < 0.995:
+            tile = tile.point(lambda v: int(v * clamp(alpha)))
+        rad = max(0, int(round(radius * SS)))
+        if rad > 0:
+            tile = _round_corners(tile, rad)
+        # 框线画在贴图之前还是之后由 z 序决定: 这里采用先投影后图后框线, 顺序固定
+        if shadow is not None and shadow_blur > 0:
+            # 底板是 RGB, 不能直接 alpha_composite (它要求 RGBA 底).
+            # 做法: 用阴影色 + 它的 alpha 生成一层遮罩, 按遮罩把底板往阴影色乘过去,
+            # 于是暗部被压住、亮部不受影响, 视觉上就是软投影.
+            sx, sy = self.P(x0 + shadow_offset[0], y0 + shadow_offset[1])
+            ex, ey = self.P(x1 + shadow_offset[0], y1 + shadow_offset[1])
+            rad2 = max(1, int(round(shadow_blur * SS * 0.5)))
+            layer = Image.new("RGB", self.img.size, tuple(shadow))
+            mask = Image.new("L", self.img.size, 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [sx, sy, ex, ey], radius=rad, fill=235)
+            mask = mask.filter(ImageFilter.GaussianBlur(rad2))
+            self.img.paste(layer, (0, 0), mask)
+        px, py = int(self.P(x0, y0)[0]), int(self.P(x0, y0)[1])
+        self.img.paste(tile, (px, py), tile if tile.mode == "RGBA" else None)
+        if outline is not None and oalpha > 0.004:
+            self.rrect(box, radius, fill=None, falpha=0.0,
+                       outline=outline, ow=ow, oalpha=oalpha)
+        return (x0, y0, x1, y1)
+
+    def image_panel(self, path, box, alpha=1.0, radius=0, fit="cover",
+                    caption=None, cap_size=26, cap_color=None, cap_gap=14,
+                    pad=0, plate=None, plate_alpha=0.92):
+        """
+        产品照与界面截图的常用形态: 图 + 底部标题 + 一层底板
+
+        素材纪律里"素材放设备窗口框里"与"素材必须被解释"两条, 靠它一次落到位:
+        图片贴进框, 下方留一条标题行说清这张图是什么. plate 给底板色 (默认取
+        引擎的 PANEL), plate_alpha 控制它透不透; pad 是图与底板之间的内缩.
+        cap_size 与 cap_gap 是设计 px.
+        """
+        x0, y0, x1, y1 = (float(v) for v in box)
+        cap_h = (cap_size * 1.7 if caption else 0) + (cap_gap if caption else 0)
+        if plate is not None:
+            self.rrect((x0 - pad, y0 - pad, x1 + pad, y1 + cap_h + pad), radius,
+                       fill=plate, falpha=plate_alpha)
+        self.image(path, box, alpha=alpha, radius=radius, fit=fit)
+        if caption:
+            self.text((x0, y1 + cap_gap), caption, cap_size,
+                      cap_color if cap_color is not None else DIM,
+                      anchor="la", kind="cn")
+        return (x0, y0, x1, y1 + cap_h)
+
+    # -- 曲线与颜色混合 (visual-engine.md 与牌面文档引用, 此前无实现) --------
+    def curve(self, pts, color, w=3.0, alpha=1.0, upto=1.0, glow=0.0, dash=None):
+        """
+        沿一串点连一条曲线, upto 控制画到哪一段 (0 到 1)
+
+        它是"曲线逐段生长"的实现: upto 由缓动函数给出 (例如 cv.eo(cv.seg(lb, 5, 7.6))),
+        于是线条按拍推进, 而不是整条一次性出现. dash 给了走虚线 (与 dashed 的
+        dash/gap 同一套语义), glow 大于 0 走发光. 点数少于 2 时什么都不画.
+        """
+        pts = [(float(a), float(b)) for a, b in pts]
+        if len(pts) < 2 or alpha <= 0.004:
+            return
+        upto = clamp(upto)
+        if upto <= 0.0:
+            return
+        # 按折线总长取到 upto 的位置, 于是"画到一半"按长度而不是按点数, 速度均匀
+        segs = [math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+                for i in range(len(pts) - 1)]
+        total = sum(segs)
+        if total <= 1e-6:
+            return
+        target = total * upto
+        if dash is not None:
+            self.dashed(pts[0], pts[-1], color, w, dash[0], dash[1], alpha, glow=glow)
+            return
+        acc = 0.0
+        for i, L in enumerate(segs):
+            if acc + L >= target:
+                f = (target - acc) / L if L > 1e-9 else 0.0
+                ax, ay = pts[i]
+                bx, by = pts[i + 1]
+                q = (ax + (bx - ax) * f, ay + (by - ay) * f)
+                if glow > 0:
+                    self.gline((ax, ay), q, color, w, alpha, glow)
+                else:
+                    self.line((ax, ay), q, color, w, alpha)
+                return
+            if glow > 0:
+                self.gline(pts[i], pts[i + 1], color, w, alpha, glow)
+            else:
+                self.line(pts[i], pts[i + 1], color, w, alpha)
+            acc += L
 
     # -- text -------------------------------------------------------------
     def text(self, p, s, size, color, alpha=1.0, anchor="la", kind="cnb", track=0.0):
