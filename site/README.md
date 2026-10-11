@@ -43,7 +43,7 @@ site/
 
 对外文案全部数据化在一个文件里: `src/constants/site.ts`. 一句话介绍, 能力清单, 九阶段划分 (阶段 0 到 8), 依赖表, 安装方式, 设计取舍都在里面, 页面组件只负责渲染, 改文案不需要动组件.
 
-唯一的例外是首页能力区的引导语: `src/pages/index.vue` 里那句"二十份方法论文档加三十五个脚本"是硬编码的数字, 技能目录增删文件后要手工数一遍并同步 (当前为 references 20 份, scripts 35 个, templates 9 个, 合计 65 个文件, 与 `release-skill.yml` 打包自检的口径一致).
+唯一的例外是首页能力区的引导语: `src/pages/index.vue` 里那句"二十一份方法论文档, 三十八个脚本与九份骨架模板"是硬编码的数字, 技能目录增删文件后要手工数一遍并同步 (当前为 references 21 份, scripts 38 个, templates 9 个, 合计 69 个文件, 与 `release-skill.yml` 打包自检的口径一致). 同理, 页面若要写验收判据条数, 要与 `SKILL.md` 第八节的表对齐 (当前 21 项); 新增 `references/limits.md` 这样的入口级文档时也要回头看这一行.
 
 作者信息也在同一个文件, 改 `AUTHOR` 常量即可, 页脚由 `src/components/AuthorFooter.vue` 渲染并挂在默认布局上, 每个页面都会带上.
 
@@ -52,7 +52,7 @@ site/
 | 内容 | 站点位置 | 技能侧位置 |
 |:---:|:---:|:---:|
 | 一句话介绍 | `src/constants/site.ts` 的 `tagline` | `README.md`, `README_en-US.md`, 技能 `SKILL.md` 的 `description` |
-| 能力与阶段划分 | `src/constants/site.ts` 的 `CAPABILITIES` 与 `STAGES` | `README.md` 的能做什么与工作流程 |
+| 能力与阶段划分 | `src/constants/site.ts` 的 `CAPABILITIES` 与 `STAGES` | `README.md` 与 `README_en-US.md` 的"能做什么"与"工作流程", 以及 `SKILL.md` 的第二, 五与第八节 |
 | 许可证 | `src/constants/site.ts` 的 `SITE.license` | 根目录 `LICENSE` |
 
 ## 版本号怎么改

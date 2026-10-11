@@ -1,3 +1,4 @@
+import { SITE } from './src/constants/site'
 import { fileURLToPath } from 'node:url'
 import {
   SCROLLBAR_CLASS,
@@ -10,7 +11,9 @@ import {
 const BASE_URL = process.env.NUXT_APP_BASE_URL || '/Agent-Video-Driver.SKILL/'
 
 const SITE_NAME = 'Agent-Video-Driver.SKILL'
-const SITE_DESC = '让你的 Agent 用脚本化的工具链自主生成视频, 不需要任何视频生成模型'
+// 从 tagline 派生而不是另抄一份: 抄一份的话 tagline 改动时这里会漏改,
+// 于是两个 meta description 来源不一致
+const SITE_DESC = SITE.tagline.replace(/\.$/, '')
 
 // 首屏套用主题与滚动条偏好: 必须早于样式生效, 否则会先亮后暗, 滚动条也会闪一下
 // 失败时退回默认值 (暗色主题, 隐藏滚动条)
