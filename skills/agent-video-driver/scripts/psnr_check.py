@@ -26,9 +26,18 @@ import re
 import shutil
 import subprocess
 import sys
+# 帧名与编码参数取自共享定义 (scripts/videoconf.py), 不在本文件另写一份
 
-# 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
-FRAME_PATTERN = "n%05d.png"
+# 把本文件所在目录挂进 sys.path: 共享模块 (videoconf / fontpaths) 必须能找到,
+# 而本脚本可能以任意工作目录被调用 (工程根, 或 bench 的输出目录)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import videoconf as _videoconf
+
+
+# 帧名取自共享定义, 不在这里写第二份
+FRAME_PATTERN = _videoconf.FRAME_PATTERN
 PSNR_FLOOR = 45.0
 
 

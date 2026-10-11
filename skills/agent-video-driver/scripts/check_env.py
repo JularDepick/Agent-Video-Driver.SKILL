@@ -16,7 +16,7 @@ NO = "[miss]"
 
 def run(cmd, args):
     try:
-        p = subprocess.run([cmd] + args, capture_output=True, text=True, timeout=25)
+        p = subprocess.run([cmd] + args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25)
         return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
     except Exception as e:
         return False, str(e)
@@ -214,8 +214,10 @@ def main():
 
     # 管道能力决定后续脚本怎么拿子进程的输出
     try:
-        p = subprocess.run(["ffmpeg", "-hide_banner", "-version"], capture_output=True)
-        got = bool((p.stdout or b"") + (p.stderr or b""))
+        p = subprocess.run(["ffmpeg", "-hide_banner", "-version"],
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=15)
+        got = bool((p.stdout or "") + (p.stderr or ""))
         if got:
             print("%s 子进程管道捕获 可用, 脚本可以直接读写子进程输出" % OK)
         else:
@@ -246,7 +248,7 @@ def main():
     else:
         print("结论: 浏览器不可启动, 画面只能走 Python + Pillow 的逐帧渲染路线 (本技能默认路线)")
         print("      浏览器渲染路线在本环境下不可用, 不要按 HTML/CSS/JS 出片去安排工序")
-        print("      影响范围: 十阶段流程一步都不受影响, 全程用 Pillow 路线即可交付;")
+        print("      影响范围: 九阶段流程一步都不受影响, 全程用 Pillow 路线即可交付;")
         print("                只有想走 HTML/CSS 出片这条路时才需要先修好它")
         if hints:
             print("")

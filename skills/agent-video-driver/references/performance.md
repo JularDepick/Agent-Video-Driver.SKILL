@@ -202,7 +202,7 @@ python skills/agent-video-driver/scripts/perf_probe.py --sustained 240
 本技能默认全 CPU (Pillow 逐帧绘制加 x264), GPU 只在两处有用, 用错地方等于白改:
 
 | 处 | 能不能用 GPU | 说明 |
-|:---:|:---|:---|
+|:---:|:---:|:---:|
 | 编码 | 能 | 换 `h264_nvenc` 一类硬件编码器; **这是换编码器不是加开关**, 换完必须重量 PSNR (铁律 23) |
 | 滤波 (颗粒, 缩放) | 能 | 交给 ffmpeg 的硬件滤镜 |
 | PIL 矢量绘制与文字 | 不能 | Pillow 的光栅化不可移植到 GPU, 逐帧绘制的瓶颈在这里时上 GPU 毫无帮助 |

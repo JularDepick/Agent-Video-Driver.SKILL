@@ -25,9 +25,9 @@
 
 两道帧完整性硬闸 (实测踩过: 宿主强杀渲染进程会留下 0 字节 PNG, 而 ffmpeg 的 image2
 解复用器读到坏帧是**静默停止**的, 编码器只编到坏帧就退出 0, 数文件个数完全拦不住):
-  编码前按字节大小体检帧目录, 0 字节与明显偏小的帧直接点名并拒绝开工 (退出码 8)
+  编码前按字节大小体检帧目录, 0 字节与明显偏小的帧直接点名并拒绝开工 (退出码 6)
   编码后按 -progress 的 frame 计数逐批核对, 再对拼接结果核一次 nb_read_frames,
-    两者都必须等于计划帧数, 不一致即判定残片并拒绝交付 (退出码 8)
+    两者都必须等于计划帧数, 不一致即判定残片并拒绝交付 (退出码 6)
 
 成片流信息硬闸: 编码时必须显式写出 bt709 三个色彩标签与限幅范围, 交付前对成片回读一次;
 音画必须等长, 不等长在平台上表现为黑尾或静音尾. 任一项不合格 (退出码 9).
@@ -38,9 +38,10 @@
 要重来必须显式加 --restart. --redo N 用来重做指定批次, 源帧改过时必须重编对应批次,
 否则视频里是旧帧, 磁盘上是新帧, PSNR 验收会假性崩掉.
 
-退出码: 0 成功; 2 用法错误; 3 等待用户二次确认; 4 探测判定应拦截; 5 真峰不合格;
-        6 编码或混音失败; 7 状态文件与本次配置不一致; 8 帧完整性不合格 (残帧或帧数不足);
-        9 成片流信息不合格 (色彩标签或音画等长); 130 被中断 (断点已保留)
+退出码 (与 assemble.ps1 一次编完路线共用同一套语义, 定义在 videoconf.py):
+        0 成功; 2 用法错误; 3 等待用户二次确认; 4 探测判定应拦截; 5 真峰不合格;
+        6 帧完整性不合格 (残帧或帧数不足); 7 状态文件与本次配置不一致;
+        8 编码或混音失败; 9 成片流信息不合格 (色彩标签或音画等长); 130 被中断 (断点已保留)
 """
 import argparse
 import json
@@ -55,14 +56,17 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_NAME = "assemble_state.json"
 STATE_VERSION = 1
-# 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
-FRAME_PATTERN = "n%05d.png"
-# 帧文件字节数下限. 这条闸只拦"0 字节与只写了文件头就被截断"的坏帧, 不是画质判据
-# 阈值刻意压得很低: 低分辨率试渲染的合法帧可能只有几百字节, 定高了下会误报
-# 写到一半被截断但还能解码的帧拦不住, 那种交给编码后的 nb_read_frames 硬闸
-MIN_FRAME_BYTES = 128
-# 允许的帧数误差; 拼接与混音都可能引入 1 帧内的取整偏差, 超过 1 帧才算残片
-FRAME_TOLERANCE = 1
+# 帧名, 字节下限与容差取自 videoconf.py: canvas 落盘侧与两条编码路线必须同一份,
+# 改一处漏其余几处的症状是静默的 (ffmpeg 读到坏帧会静默停止而退出码仍是 0).
+# videoconf 只含常量与纯函数, 不引入依赖, 单独复制走本文件也能跑.
+sys.path.insert(0, HERE)
+try:
+    import videoconf
+except ImportError:      # pragma: no cover - 只有缺文件时才会走到
+    videoconf = None
+FRAME_PATTERN = videoconf.FRAME_PATTERN
+MIN_FRAME_BYTES = videoconf.MIN_FRAME_BYTES
+FRAME_TOLERANCE = videoconf.FRAME_TOLERANCE
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -83,10 +87,36 @@ FFMPEG = ffmpeg_bin("ffmpeg")
 FFPROBE = ffmpeg_bin("ffprobe")
 
 
-def run(cmd, cwd=None):
-    """跑一条命令, 返回 (退出码, 合并后的输出); ffmpeg 的量测结果都写在 stderr, 所以合并读"""
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+# 每条子进程调用的超时上限 (秒). 量测类命令 (ffprobe / nb_read_frames) 正常几秒内返回,
+# 给一个远大于正常值的上限, 它的作用不是"卡得久就掐", 而是"永远卡住就掐":
+# 少了它, ffmpeg 挂死会让整条合成流程无限期停在那里, 而宿主强杀进程还会留下
+# 半写状态文件与孤儿子进程, 断点续跑也救不回来.
+PROBE_TIMEOUT = 120          # ffprobe 与帧数核对
+ENCODE_TIMEOUT = 7200        # 单批编码: 2 小时, 远超任何合理批次
+MIX_TIMEOUT = 1800           # 混音与响度归一
+CONCAT_TIMEOUT = 1800        # 无损拼接
+PSNR_TIMEOUT = 1800          # PSNR 复测
+
+
+def run(cmd, cwd=None, timeout=PROBE_TIMEOUT):
+    """
+    跑一条命令, 返回 (退出码, 合并后的输出)
+
+    ffmpeg 的量测结果都写在 stderr, 所以合并读. 超时按 (超时退出码, 提示) 返回,
+    不抛异常: 调用方本来就只按 code 判断成败, 让它去 catch 超时反而每个调用点都要改.
+    """
+    try:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        got = ""
+        for part in (e.stdout, e.stderr):
+            if part is None:
+                continue
+            got += part.decode("utf-8", "replace") if isinstance(part, bytes) else part
+        return 124, got + "\n[超时] 这条命令超过 %d 秒仍未结束, 已掐掉. ffmpeg 挂死的常见原因:\n" \
+               "输入帧序列里有读不动的文件 (坏 PNG / 网络盘), 或输出目录不可写; " \
+               "先按 assemble_core.py --probe-only 的帧完整性体检过一遍再重试." % timeout
     return p.returncode, ((p.stdout or "") + (p.stderr or ""))
 
 
@@ -324,66 +354,37 @@ def print_gate(cfg, lim):
     print("=" * 62)
 
 
+# 滤镜链: 先给帧打上色彩标签, 再叠颗粒.
+#
+# 为什么必须显式打标签: PNG 输入的帧本身没有色彩标签 (ffprobe 对 PNG 报
+# color_space=gbr), 而 libx264 只从帧上读标签写进 VUI. 于是只给编码器加命令行参数
+# (-colorspace/-color_primaries/-color_trc) 时, 三个标签里只有 color_space 成了
+# bt709, primaries 与 transfer 落回 unknown, 交付前的回读闸会判不合格.
+#
+# 用 setparams 而不是 colorspace 滤镜: colorspace 会真做一次色彩转换, 实测把 PSNR
+# 从 55.2 dB 打到 28.1 dB (掉到 45 dB 判据之下); setparams 只写帧头标签不碰像素,
+# 三个标签全对而 PSNR 保持 51.8 dB.
+COLOR_FILTER = ("format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709"
+                ":colorspace=bt709:range=tv")
+
+
 def encode_filter(cfg):
-    return "noise=alls=%d:allf=t,format=yuv420p" % cfg["noise"]
+    return "%s,noise=alls=%d:allf=t" % (COLOR_FILTER, cfg["noise"])
 
 
 def color_args():
-    """
-    显式写出 bt709 三个色彩标签与限幅范围
-
-    不写时由 ffmpeg 按分辨率自动推断, 推断结果随编码器与滤镜链变化, 表现为"本机看着正常,
-    换台机器或上传到平台后整体偏色发灰". 三个标签必须逐段与成片完全一致, 否则拼接处会变色
-    成片阶段走 -c:v copy, 标签由这里写入的 VUI 直接带过去, 不需要在混音步骤重复一次
-    """
-    return ["-colorspace", "bt709", "-color_primaries", "bt709",
-            "-color_trc", "bt709", "-color_range", "tv"]
+    """bt709 色彩标签与限幅范围; 定义在 videoconf.py, 与一次编完路线共用"""
+    return videoconf.color_args()
 
 
 def gop_args(cfg, name):
-    """
-    固定 GOP, 让各批次的关键帧落在可预测的帧号上
-
-    分批路线靠 concat demuxer 加 -c copy 拼接, 各批参数不一致会在接缝处掉帧或闪一下;
-    -sc_threshold 0 关掉场景切换自动插关键帧, 它只在 libx264 上有确定语义, 硬件编码器
-    按自己的 GOP 策略走, 只给通用的 -g 与 -keyint_min
-    """
-    k = str(int(round(cfg["fps"])))
-    args = ["-g", k, "-keyint_min", k]
-    if name == "libx264":
-        args += ["-sc_threshold", "0"]
-    return args
+    """固定 GOP; 定义在 videoconf.py, 与一次编完路线共用"""
+    return videoconf.gop_args(cfg["fps"], name)
 
 
-def encoder_args(cfg, lim):
-    """
-    把 CPU 侧的 preset 与 crf 映射到所选编码器
-
-    换编码器不等于给同一个编码器加开关: x264 是纯 CPU 编码器, CUDA 加速不了它; 用 NVENC
-    是换成另一个编码器, 画质与体积都会变, 换完必须用下面的 PSNR 质检重新量一遍
-
-    画面全部由代码绘制, 平面色块与细线条占多数, 因此 libx264 缺省给 -tune animation
-    (加大去块滤波与参考帧数, 对平坦区域更省码率); 换 tune 会改变体积与 PSNR, 换之前先跑
-    bench_encode.py 对着无损参考重量一遍
-    """
-    name = cfg["encoder"]
-    preset = lim["preset"]
-    if name == "libx264":
-        return ["-c:v", "libx264", "-preset", preset, "-crf", str(cfg["crf"]),
-                "-tune", "animation", "-profile:v", "high"]
-    if name.endswith("_nvenc"):
-        table = {"slow": "p7", "medium": "p6", "fast": "p5", "veryfast": "p4"}
-        # NVENC 用 vbr 加 cq, 并把目标码率交给 cq 决定, 否则它按固定码率跑, 体积会失控
-        # 注意 cq 与 crf 不是同一标度: 这里按本机实测直接映射, 换显卡世代必须重新标定
-        return ["-c:v", name, "-preset", table.get(preset, "p6"), "-tune", "hq",
-                "-rc", "vbr", "-cq", str(cfg["crf"]), "-b:v", "0", "-profile:v", "high"]
-    if name.endswith("_qsv"):
-        return ["-c:v", name, "-preset", "medium", "-global_quality", str(cfg["crf"])]
-    if name.endswith("_amf"):
-        return ["-c:v", name, "-quality", "balanced", "-rc", "cqp",
-                "-qp_i", str(cfg["crf"]), "-qp_p", str(cfg["crf"])]
-    # 其余硬件编码器 (例如 vaapi) 参数语义差别更大, 只透传编码器与 crf, 由使用者自己核对
-    return ["-c:v", name, "-crf", str(cfg["crf"])]
+def encoder_args(encoder, preset, crf, fps):
+    """编码器参数映射; 定义在 videoconf.py, 与一次编完与基准路线共用"""
+    return videoconf.encoder_args(encoder, preset, crf, fps)
 
 
 def encode_batch(cfg, lim, batch, seg_path, state, state_path):
@@ -401,7 +402,7 @@ def encode_batch(cfg, lim, batch, seg_path, state, state_path):
            "-start_number", str(start),
            "-i", cfg["pattern"],
            "-frames:v", str(count),
-           "-vf", encode_filter(cfg)] + encoder_args(cfg, lim) + gop_args(cfg, cfg["encoder"]) + [
+           "-vf", encode_filter(cfg)] + encoder_args(cfg["encoder"], lim["preset"], cfg["crf"], cfg["fps"]) + [
            "-threads", str(lim["threads"]), "-pix_fmt", "yuv420p"] + color_args() + [
            "-movflags", "+faststart",
            "-progress", "pipe:1", "-nostats", seg_path]
@@ -459,7 +460,7 @@ def concat(cfg, lim, state, state_path):
 def measure_lufs(path):
     """从波形或成片量集成响度 I; 量产测结果写在 stderr, 拿不到就返回 None"""
     code, out = run([FFMPEG, "-hide_banner", "-nostats", "-i", path,
-                     "-map", "0:a", "-af", "ebur128=peak=true", "-f", "null", "-"])
+                     "-map", "0:a", "-af", "ebur128=peak=true", "-f", "null", "-"], timeout=ENCODE_TIMEOUT)
     hits = re.findall(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", out, re.M)
     return float(hits[-1]) if hits else None
 
@@ -485,7 +486,7 @@ def measure_true_peak(path):
     两种都解析, 都解析不到才返回 None, 不要让真峰验收静默失效
     """
     code, out = run([FFMPEG, "-hide_banner", "-nostats", "-i", path,
-                     "-map", "0:a", "-af", "ebur128=peak=true", "-f", "null", "-"])
+                     "-map", "0:a", "-af", "ebur128=peak=true", "-f", "null", "-"], timeout=ENCODE_TIMEOUT)
     return measure_true_peak_on_text(out)
 
 
@@ -498,7 +499,7 @@ def mix_and_normalize(cfg, lim, state, state_path):
         code, out = run([FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
                          "-i", cfg["audio"], "-ar", "48000",
                          "-c:a", "aac", "-b:a", "%dk" % cfg["audio_bitrate"],
-                         mix_audio])
+                         mix_audio], timeout=MIX_TIMEOUT)
         if code != 0:
             return code, "生成量测音频失败\n" + out
         i0 = measure_lufs(mix_audio)
@@ -517,7 +518,7 @@ def mix_and_normalize(cfg, lim, state, state_path):
                          "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-af", af,
                          "-ar", "48000", "-c:a", "aac", "-b:a", "%dk" % cfg["audio_bitrate"],
                          "-threads", str(lim["threads"]),
-                         "-movflags", "+faststart", "-shortest", cfg["out"]])
+                         "-movflags", "+faststart", "-shortest", cfg["out"]], timeout=MIX_TIMEOUT)
         if os.path.exists(mix_audio):
             os.remove(mix_audio)
         return code, out
@@ -528,7 +529,7 @@ def mix_and_normalize(cfg, lim, state, state_path):
                 "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-af", af,
                 "-ar", "48000", "-c:a", "aac", "-b:a", "%dk" % cfg["audio_bitrate"],
                 "-threads", str(lim["threads"]),
-                "-movflags", "+faststart", "-shortest", cfg["out"]])
+                "-movflags", "+faststart", "-shortest", cfg["out"]], timeout=MIX_TIMEOUT)
 
 
 def psnr_against_frames(cfg):
@@ -536,7 +537,7 @@ def psnr_against_frames(cfg):
     code, out = run([FFMPEG, "-hide_banner", "-nostats",
                      "-framerate", str(cfg["fps"]), "-i", cfg["pattern"],
                      "-i", cfg["video_only"],
-                     "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"])
+                     "-lavfi", "[0:v][1:v]psnr", "-f", "null", "-"], timeout=PSNR_TIMEOUT)
     hits = re.findall(r"average:(\d+(?:\.\d+)?)", out)
     return float(hits[-1]) if hits else None
 
@@ -619,9 +620,11 @@ def parse_args(argv):
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--crf", type=int, default=19)
     ap.add_argument("--noise", type=int, default=2, help="轻颗粒强度, 0 表示不加")
-    ap.add_argument("--lufs", type=float, default=-15.0)
-    ap.add_argument("--audio-bitrate", type=int, default=384, help="AAC 码率, 不要低于 384")
-    ap.add_argument("--true-peak-ceiling", type=float, default=-1.0)
+    ap.add_argument("--lufs", type=float, default=videoconf.LUFS_TARGET,
+                    help="loudnorm 的目标点, 缺省取验收区间的中值 %s" % videoconf.LUFS_TARGET)
+    ap.add_argument("--audio-bitrate", type=int, default=videoconf.AUDIO_BITRATE_K, help="AAC 码率, 不要低于 384")
+    ap.add_argument("--true-peak-ceiling", type=float, default=videoconf.TRUE_PEAK_CEILING,
+                    help="成片真峰上限 dBTP, 超过判不合格 (缺省 %.1f)" % videoconf.TRUE_PEAK_CEILING)
     ap.add_argument("--encoder", default="libx264", help="视频编码器, 例如 libx264 或 h264_nvenc")
     ap.add_argument("--threads", type=int, default=0, help="编码线程数, 0 表示取探测建议")
     ap.add_argument("--preset", default="", help="编码预设, 空表示取探测建议")
@@ -661,13 +664,13 @@ def main(argv=None):
         print("错误: 帧目录缺帧, 帧号 [0, %d) 有空洞, 共 %d 处: %s%s"
               % (total, len(miss), head, more))
         print("  中间缺帧会让对应批次编码中途失败; 补渲缺的帧, 或把完整帧目录放回来")
-        return 2
+        return videoconf.EXIT_USAGE
 
     # 帧数齐不等于帧可用: 被强杀的渲染进程会留下 0 字节 PNG, 而 ffmpeg 读到坏帧是静默停止的
     bad = broken_frames(a.frames, total, a.min_frame_bytes)
     if bad:
         report_broken(a.frames, bad, a.min_frame_bytes)
-        return 8
+        return videoconf.EXIT_FRAME_INTEGRITY
 
     report, _ = probe_limits(cfg)
     lim = resolve_limits(cfg, report)
@@ -678,7 +681,7 @@ def main(argv=None):
     if old is not None and state is None and not a.restart:
         print("状态文件与本次配置不一致, 不能直接续跑: %s" % state_path)
         print("  要么把参数改回上次的值, 要么加 --restart 全部重来")
-        return 7
+        return videoconf.EXIT_STATE_MISMATCH
     if state is not None:
         # 批次表自洽检查: 批次表是启动时按当时帧数算出的, 帧目录后来补齐或变动过的话
         # 旧表就与实际帧数对不上, 继续编会报"找不到序列"; 有差额就打印两个数字并要求重启
@@ -688,7 +691,7 @@ def main(argv=None):
             print("  批次表按 %d 帧算出, 帧目录现在是 %d 帧, 差 %+d 帧"
                   % (planned, cfg["total_frames"], cfg["total_frames"] - planned))
             print("  加 --restart 重算批次表; 只想重编某几批先 --restart 再 --redo")
-            return 7
+            return videoconf.EXIT_STATE_MISMATCH
     fresh = state is None
     if fresh:
         state = new_state(cfg)
@@ -714,12 +717,12 @@ def main(argv=None):
                 print("没有拿到确认, 已取消合成")
                 state["stage"] = "waiting"
                 write_state(state_path, state)
-                return 3
+                return videoconf.EXIT_WAIT_CONFIRM
         else:
             print("正在等待用户二次确认, 拿到同意后加 --yes 重跑")
             state["stage"] = "waiting"
             write_state(state_path, state)
-            return 3
+            return videoconf.EXIT_WAIT_CONFIRM
 
     if lim["blocked"] and not a.force:
         print("探测判定应拦截, 未给 --force, 已停止, 不做任何编码")
@@ -728,7 +731,7 @@ def main(argv=None):
         state["stage"] = "blocked"
         state["error"] = "; ".join(lim["reasons"])
         write_state(state_path, state)
-        return 4
+        return videoconf.EXIT_BLOCKED
 
     if set_priority(lim["priority"]):
         print("已把本进程优先级设为 %s, 子进程会继承" % lim["priority"])
@@ -788,7 +791,7 @@ def main(argv=None):
                 print("编码失败: 第 %02d 批 (帧 %d 到 %d), 退出码 %d"
                       % (b["index"], b["start"], b["end"], code))
                 print(tail[-1200:])
-                return 6
+                return videoconf.EXIT_ENCODE
             # 退出码 0 不代表编满了: image2 解复用器遇到坏帧会静默停止, 编码器照样退出 0
             want = b["end"] - b["start"]
             if encoded != want:
@@ -803,7 +806,7 @@ def main(argv=None):
                       % (b["start"] + encoded))
                 print("  ffmpeg 的 image2 解复用器读到坏帧会静默停止, 但退出码仍是 0")
                 print("  处置: 按上面的帧号重渲该帧, 再回来 --redo %d 重编这一批" % b["index"])
-                return 8
+                return videoconf.EXIT_FRAME_INTEGRITY
             b["status"] = "done"
             b["frames_done"] = b["end"] - b["start"]
             b["bytes"] = os.path.getsize(b["seg"]) if os.path.exists(b["seg"]) else 0
@@ -825,7 +828,7 @@ def main(argv=None):
             write_state(state_path, state)
             print("拼接失败, 退出码 %d" % code)
             print(out[-1200:])
-            return 6
+            return videoconf.EXIT_ENCODE
 
         # 拼接后的最终硬闸: 对整条视频流数一次 nb_read_frames, 与计划帧数对齐才允许进入混音
         # 逐批的 frame 计数只看编码器自报, 数拼接结果才能证明成片真的是计划帧数
@@ -840,7 +843,7 @@ def main(argv=None):
             print("错误: 拼接结果只有 %d 帧, 计划 %d 帧, 差 %d 帧"
                   % (got, want, want - got))
             print("  成片会是残片, 拒绝进入混音; 按上面的差量补渲缺的帧或重编对应批次")
-            return 8
+            return videoconf.EXIT_FRAME_INTEGRITY
         else:
             state["frames_verified"] = got
             print("[2/4] 帧完整性核对: 拼接结果 %d 帧, 计划 %d 帧, 一致" % (got, want))
@@ -858,7 +861,7 @@ def main(argv=None):
             write_state(state_path, state)
             print("混音失败, 退出码 %d" % code)
             print(out[-1200:])
-            return 6
+            return videoconf.EXIT_ENCODE
 
         state["stage"] = "verify"
         state["note"] = "流信息, 真峰与 PSNR"
@@ -944,7 +947,7 @@ def main(argv=None):
               "验收完可以整个目录删掉" % cfg["seg_dir"])
         if peak_failed:
             print("完成但有不合格项: %s" % cfg["out"])
-            return 5
+            return videoconf.EXIT_TRUE_PEAK
         if tag_failed or av_failed:
             why = []
             if tag_failed:
@@ -952,7 +955,7 @@ def main(argv=None):
             if av_failed:
                 why.append("音画不等长")
             print("成片流信息不合格 (%s): %s" % (", ".join(why), cfg["out"]))
-            return 9
+            return videoconf.EXIT_STREAM_INFO
         print("完成: %s" % cfg["out"])
         return 0
     except KeyboardInterrupt:

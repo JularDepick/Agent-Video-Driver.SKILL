@@ -56,7 +56,9 @@ import numpy as np
 import dsp
 
 SR = dsp.SR
-TMPDIR = os.path.join("temp", "sfx_tmp")
+# 临时目录按 pid 隔离: 原来固定名, 两个 sfx.py 并发跑时会互相把对方正在用的
+# 临时文件与目录删掉 (finally 里的 os.rmdir 是无条件执行的)
+TMPDIR = os.path.join("temp", "sfx_tmp_%d" % os.getpid())
 
 WHOOSH_WARN = 2
 DENSITY_MIN_SECONDS = 6.0
@@ -69,7 +71,10 @@ class SfxError(Exception):
 
 # ----------------------------------------------------------------- 样本读写
 def run_cmd(cmd):
-    p = subprocess.run(cmd, capture_output=True)
+    # text=True 配 encoding: 子进程输出按 UTF-8 解, 不靠系统代码页 (中文 Windows 上是
+    # GBK, 会抛 UnicodeDecodeError), errors="replace" 保证个别怪字符不中断整个脚本
+    p = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     err = p.stderr
     if isinstance(err, bytes):
         err = err.decode("utf-8", "replace")
@@ -101,7 +106,10 @@ def load_sample(path):
     if not ff:
         raise SfxError("样本 %s 不是 48k 立体声 pcm_s16le, 而 PATH 里找不到 ffmpeg, 无法转码" % path)
     os.makedirs(TMPDIR, exist_ok=True)
-    tmp = os.path.join(TMPDIR, "t%08d.wav" % (abs(hash(path)) % 10 ** 8))
+    # 文件名用序号而不是 hash(): str 的 hash() 受 PYTHONHASHSEED 随机化,
+    # 同一路径两次运行得到不同文件名, 撞上还可能互相覆盖
+    load_sample.counter += 1
+    tmp = os.path.join(TMPDIR, "t%06d.wav" % load_sample.counter)
     try:
         code, err = run_cmd([ff, "-y", "-v", "error", "-i", path, "-ar", str(SR), "-ac", "2",
                              "-c:a", "pcm_s16le", tmp])
@@ -114,6 +122,7 @@ def load_sample(path):
                 os.remove(tmp)
             except OSError:
                 pass
+        # 目录只在空的时候删; 删不掉就留着, 它在 temp/ 下, 交付前统一清理
         try:
             os.rmdir(TMPDIR)
         except OSError:
@@ -121,6 +130,11 @@ def load_sample(path):
     if a is None or a.shape[1] == 0:
         raise SfxError("样本 %s 转码后仍读不出 48k 立体声 pcm_s16le" % path)
     return a
+
+
+# 本进程内临时文件的递增序号, 用来给临时文件取名而不是用 hash()
+# (str 的 hash() 受 PYTHONHASHSEED 随机化, 同一路径两次运行名字不同, 撞上还互相覆盖)
+load_sample.counter = 0
 
 
 def write_wav(path, st):

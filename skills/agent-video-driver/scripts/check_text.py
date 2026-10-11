@@ -35,6 +35,9 @@ import json
 import os
 import sys
 
+# 字体路径表的唯一来源 (scripts/fontpaths.py), 与 canvas.FONT_PATH 共用同一份
+import fontpaths as _fontpaths
+
 # 本脚本会打印字体是否认识 ✓ ₂ 这类特殊字符, GBK 控制台直接 print 会抛
 # UnicodeEncodeError 把体检结果变成裸 traceback, 先把输出流转成可容错的 UTF-8
 try:
@@ -45,12 +48,8 @@ except (AttributeError, ValueError):
 import numpy as np
 from PIL import Image, ImageDraw
 
-FONTS = {
-    "cnb": r"C:\Windows\Fonts\msyhbd.ttc",
-    "cn": r"C:\Windows\Fonts\msyh.ttc",
-    "mono": r"C:\Windows\Fonts\consolab.ttf",
-    "monor": r"C:\Windows\Fonts\consola.ttf",
-}
+# 与 canvas.FONT_PATH 同一份定义 (fontpaths.py): 字形体检必须体检渲染真正会用的字体
+FONTS = dict(_fontpaths.DEFAULT_FONTS)
 PUA = "\ue000"
 DEFAULT_TEXTS = [
     "坐标系 · 向量", "2026 诺贝尔化学奖", "不对称有机合成中的非线性效应与自催化",

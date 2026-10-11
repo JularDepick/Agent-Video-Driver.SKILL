@@ -103,7 +103,7 @@ python scripts/check_layout.py scene_module.py --json temp/qa/layout.json
 它从场景模块里抽出全部 `text` / `text_fit` / `text_cap` / `rich` 调用, 用**真实墨迹**算出每个块的墨迹框, 两两比较, 分三类报:
 
 | 类别 | 含义 | 是否判不合格 |
-|:---:|:---|:---:|
+|:---:|:---:|:---:|
 | 硬撞 | 同一函数内两块墨迹框的 x 与 y 区间同时相交 | 是 (退出码 1) |
 | 越界 | 单个墨迹框超出安全边距 | 是 (退出码 1) |
 | 太挤 | 纵向不相交, 但间隙小于 `--gap-ratio` x 较大字号 | 只在 `--strict` 下 |
@@ -184,7 +184,7 @@ python scripts/brightness.py temp/frames_proj/n001200.png
 它量三项: 均值, 中位数, p95, 另外给 p99 与暗部亮部占比, 以及中位数的 RGB.
 
 | 量 | 决定什么 | 参考量级 |
-|:---:|:---|:---|
+|:---:|:---:|:---:|
 | 中位数 | 底色深浅 | 暗场片常在 5 到 30 之间; 超过 120 说明这是亮场片的量级 |
 | p95 与 p99 | 字幕亮度 | 白字应在 200 到 250; 两个都低于 120 才算白字不够亮 |
 | 均值 | 整体曝光 | 与参考片同位置比, 偏离 2 倍以上就是管线有问题 |
@@ -214,7 +214,7 @@ ffmpeg -i temp\video_only.mp4 -vf "signalstats,metadata=print:key=lavfi.signalst
 平均亮度只能拦住"整屏全黑"这一种, 拦不住"有底色但什么都没画"和"只剩背景". 逐屏表另有三个量:
 
 | 量 | 定义 | 判据 |
-|:---:|:---:|:---|
+|:---:|:---:|:---:|
 | 唯一色数 `uniq` | 一帧里不同的 RGB 三元组数量 | 低于 400 报 BLANK; 图形场景通常高于 8000 |
 | 饱和度 `sat` | 平均饱和度 | 低于 0.02 且 `uniq` 低于 3000 报 FLAT (可能只剩背景) |
 | 平均亮度 `mean` | 全帧亮度均值 | 低于 2.0 也报 BLANK, 与上面那条取其一 |
@@ -234,6 +234,10 @@ ffmpeg -i temp\video_only.mp4 -vf "signalstats,metadata=print:key=lavfi.signalst
 ```
 python scripts/perf_probe.py --scene scene_module.py --seg 3 --frame 120 --hash
 ```
+
+给了 `--scene` 就走"核工程里真正那一帧"的路线: 量它的单帧耗时并把同一帧渲两次比哈希,
+不再跑四张基准表. 裸 `--hash` 核的是探针自造的合成帧, 抓不到场景里的随机源与全局状态;
+要核交付的那一帧必须给 `--scene` (段号与帧号都从 0 起).
 
 ## 四, 画质 (PSNR)
 
@@ -257,6 +261,16 @@ ffmpeg -framerate 30 -i temp\frames\n%05d.png -i temp\video_only.mp4 -lavfi "[0:
 ### 色彩标签与音画等长 (编码命令必须显式写出来)
 
 **编码时必须显式写出 bt709 三个色彩标签与 tv 限幅范围**: `-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv`. 不写时由 ffmpeg 按分辨率自动推断, 推断结果随编码器与滤镜链变化, 现象是"本机看着正常, 换台机器或上传到平台后整体偏色发灰". `assemble.ps1` 与 `assemble_core.py` 已经把它写进编码命令, 并在交付前回读一次; 标签不是 bt709 时退出 9.
+
+**只给编码器加这四个参数还不够, 滤镜链里也要给帧打标签**. 实测 (FFmpeg 7 + libx264): 帧输入是 PNG, 帧本身没有色彩标签 (ffprobe 对 PNG 报 `color_space=gbr`), 而 libx264 只从**帧上**读标签写进 VUI. 于是命令里四个参数都给了, 出来的成片仍然是 `color_space=bt709` 但 `color_primaries=unknown` 与 `color_transfer=unknown`, 三标签闸照样判不合格.
+
+正解是在滤镜链里插 `setparams` 给帧打标签, 编码器再从帧上原样读走:
+
+```
+format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv
+```
+
+**不要用 `colorspace` 滤镜替代**: 它会真做一次色彩转换, 实测把同一段 90 帧的 PSNR 从 55.2 dB 打到 28.1 dB, 直接掉到 45 dB 判据之下. `setparams` 只写帧头标签不碰像素, 三个标签全对而 PSNR 保持 51.8 dB (扣掉的是颗粒滤镜的固有代价, 与标签无关). 三条路线 (一次编完, 分批, 基准) 的滤镜链与色彩标签现在都取自 `scripts/videoconf.py`, 改一处即可.
 
 **音画必须等长**: 平台上出现黑尾或静音尾, 根因就是音轨比视频长, 而这个现象在中间产物上看不出来, 只有在成片上分离读出两条流的 duration 才能对上. 判据是两条流相差不超过一帧, 由编码脚本在交付前核对.
 
@@ -294,7 +308,7 @@ python scripts/bench_encode.py --frames temp/frames_proj --count 240            
 已经量过的三条结论 (同一段 240 帧, crf/cq 19):
 
 | 做法 | 实测 | 结论 |
-|:---:|:---|:---|
+|:---:|:---:|:---:|
 | preset 从 slow 降到 medium | 1800 帧 253.4 秒对 223.3 秒, 体积与 PSNR 几乎相同 | 收益很小, 不该当主要提速手段 |
 | 把 x264 线程数从 6 加到 12 | 101.3 秒变成 109.0 秒 | 瓶颈不在 x264 的并行度时加线程反而更慢 |
 | 换 NVENC (p6) | 只快 24%, 体积是同画质 x264 的 3 到 6 倍 | 这一轮量测里解码占了一半以上, 差别被掩盖, 必须先扣掉输入侧开销 |
@@ -322,7 +336,9 @@ python scripts/bench_encode.py --frames temp/frames_proj --count 240            
 ffmpeg -i <成片> -map 0:a -af ebur128=peak=true -f null -
 ```
 
-判据: 集成响度 I 在 -16 到 -14 LUFS, 真峰值 TPK 不高于 -1.0 dBFS, LRA 在 3 到 8 LU.
+判据: 集成响度 I 在 **-16 到 -14 LUFS** (验收区间), 真峰值 TPK 不高于 -1.0 dBFS, LRA 在 3 到 8 LU.
+
+编码时的**目标点**是 -15 LUFS (脚本 `--lufs` 的缺省值, 取区间中值), 它与验收区间不是同一件事: 单遍 loudnorm 按目标点归一后仍会过冲, 实测目标 -15 时成片落在 -13.7, 已经冲出区间上沿. 要落在区间内就开精确响度闭环 (`--exact-loudness`), 它量测后按差值补精确增益再加限幅, 不重渲画面.
 
 注意单遍 `loudnorm` 会过冲: 实测目标 -15 LUFS 时成片落在 -13.7 LUFS, 高出约 1.3dB.
 要求严格时打开 `scripts/assemble.ps1` 的精确响度路径 (量测 `ebur128` 的集成响度, 按差值做精确增益, 再过限幅器), 它不重渲画面.
@@ -336,7 +352,7 @@ ffmpeg -i <成片> -map 0:a -af ebur128=peak=true -f null -
 - `scripts/assemble.ps1` 已按这条实现: 从成片解码回来量真峰, 超过 `-TruePeakCeiling` (缺省 -1.0 dBFS) 判不合格并退出 5
 - 写盘前的配乐也要先压住真峰, 方法见 `audio-engine.md` 的混音与母带
 
-实测对照: 诺奖片 -13.7 LUFS / -1.5 dBFS / LRA 5.0 LU.
+实测对照 (单遍 loudnorm 路线, 未开精确闭环): 诺奖片 -13.7 LUFS / -1.5 dBFS / LRA 5.0 LU. 注意 -13.7 已冲出验收区间上沿 -14, 是"单遍过冲"的证据, 不是合格样本; 开精确闭环后同一条片子落在区间内.
 
 ## 六, 音频内部平衡
 
@@ -349,7 +365,7 @@ ffmpeg -i <成片> -map 0:a -af ebur128=peak=true -f null -
 配乐自身的判据 (`check_audio.py`) 之外, 三件事各自有判据, 且都在编码前就能做:
 
 | 项 | 判据 | 什么时候 | 方法 |
-|:---:|:---|:---:|:---|
+|:---:|:---:|:---:|:---:|
 | 拟音稀疏度 | 平均间隔不低于 6 秒, 噪声 whoosh 不超过 2 次, 最长两段留白各不低于 6 秒 | 阶段 4 做完拟音轨 | `scripts/sfx.py` 跑完自己打印这三项, 不达标就回去改分镜表的声音设计一节 |
 | 声音三层齐备 | 每个可见动作有声音, 材质对得上, 至少两处真静默, 至少两次声音转场 (J-cut 或 L-cut) | 阶段 4 后, 阶段 6 前 | 对着分镜表的声音设计一节逐段核对 |
 | 锚点是否落在实测能量变化上 | 每个关键句的小节号都能在逐小节 RMS 曲线的变化量前列里找到 | 阶段 3 写分镜时, 阶段 4 合成后各一次 | `python scripts/audio_env.py <wav> --fps <帧率> --bpm <BPM> --anchors 6 --md temp/qa/audio_bars.md` |
@@ -405,7 +421,7 @@ ffmpeg -i out\成片.mp4 -vf "blackdetect=d=0.1:pix_th=0.10" -an -f null -
 ## 交付前的自检清单
 
 | 项 | 命令或方法 | 通过标准 |
-|:---:|:---|:---|
+|:---:|:---:|:---:|
 | 帧数完整 | 统计 temp 下 PNG 数量 | 等于 时长 x 帧率 |
 | 帧可读 | 编码前的字节体检 (`assemble_core.py --probe-only`) | 没有 0 字节与小于阈值的帧 |
 | 编码后帧数 | 编码后的 `nb_read_frames` | 等于计划帧数, 差不超过 1 帧 |

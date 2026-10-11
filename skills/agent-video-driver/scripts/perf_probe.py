@@ -440,6 +440,135 @@ def sustained(spec, frames, out_dir):
     return times
 
 
+def load_scene(path):
+    """
+    按路径加载用户的场景模块, 返回它自己
+
+    场景模块放在工程根, 而本脚本在 skills/agent-video-driver/scripts/ 下,
+    所以按文件路径加载而不是 import, 并把工程根临时挂进 sys.path:
+    场景模块顶部的引导会自己 import canvas 与 audio_env, 找不到就报错.
+    """
+    import importlib.util
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        return None, "场景模块不存在: %s" % path
+    root = os.path.dirname(path)
+    added = root not in sys.path
+    if added:
+        sys.path.insert(0, root)
+    try:
+        spec_ = importlib.util.spec_from_file_location("_probe_scene", path)
+        mod = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(mod)
+    except Exception as e:
+        return None, "场景模块导入失败: %s: %s" % (type(e).__name__, e)
+    finally:
+        if added and root in sys.path:
+            sys.path.remove(root)
+    return mod, None
+
+
+def scene_frame(mod, seg, frame):
+    """
+    渲场景模块的第 seg 幕第 frame 帧 (seg 与 frame 都是从 0 起的整数)
+
+    frame 不给时取该幕的首帧. 渲出来的是原分辨率成片帧, 不是超采样中间画布,
+    所以它量到的就是编码器真正会拿到的那张图.
+    """
+    cv.audit_start()
+    try:
+        segs = getattr(mod, "SEG_OF", None)
+        scenes = getattr(mod, "SCENES", None)
+        if not segs or not scenes:
+            return None, "场景模块缺少 SEG_OF 或 SCENES, 先跑一次 python scene_module.py segments"
+        if seg < 0 or seg >= len(segs) - 1:
+            return None, "段号 %d 越界, 可用范围 0 到 %d" % (seg, len(segs) - 2)
+        nframes = int(round((segs[seg + 1] - segs[seg]) * cv.FPS))
+        if nframes <= 0:
+            return None, "第 %d 幕时长为 0 或为负, 段表必须严格递增" % seg
+        f = max(0, min(int(frame), nframes - 1))
+        t = segs[seg] + f / float(cv.FPS)
+        cam = getattr(mod, "cam", None)
+        img = cv.render_frame(mod.pick, t, cam(t) if cam else None)
+        return img, "第 %d 幕 第 %d 帧 = 第 %d 帧 (t=%.3f 秒, 该幕共 %d 帧)" % (
+            seg, f, int(round(t * cv.FPS)), t, nframes)
+    finally:
+        cv.audit_stop()
+
+
+def scene_determinism(path, seg, frame):
+    """
+    真实场景帧的确定性检查: 同一帧渲两次, 比对字节哈希
+
+    与 frame_hash 的区别: 那个核的是探针自造的合成帧, 这个核的是**工程里真正会
+    编码的那一帧**, 于是场景里的随机源, 全局状态与时间相关取值都会被抓出来.
+    这是 SKILL.md 里"确定性"那一项验收真正要用的命令.
+    """
+    mod, err = load_scene(path)
+    if mod is None:
+        print(err)
+        return 2
+    a, info = scene_frame(mod, seg, frame)
+    if a is None:
+        print(info)
+        return 2
+    print("")
+    print("场景确定性: %s" % info)
+    b, _ = scene_frame(mod, seg, frame)
+    ha = hashlib.sha256(a.tobytes()).hexdigest()
+    hb = hashlib.sha256(b.tobytes()).hexdigest()
+    print("  第一次 %s" % ha[:32])
+    print("  第二次 %s" % hb[:32])
+    if ha == hb:
+        print("  一致: 这一帧只依赖时间, 种子与全局状态都没漏")
+        return 0
+    print("  不一致: 有随机源没定死, 检查种子, 全局状态与时间相关的取值")
+    return 1
+
+
+def scene_cost(path, seg, frame, out_dir):
+    """
+    真实场景帧的单帧耗时: 冷首帧与预热后各量一次
+
+    探针自造帧的绝对耗时只代表合成负载, 不代表这一片真正的段; 报价之前
+    先用它自己的一帧量一次, 差着十倍的情况是常见的.
+    """
+    mod, err = load_scene(path)
+    if mod is None:
+        print(err)
+        return 2
+    t0 = time.perf_counter()
+    first, info = scene_frame(mod, seg, frame)
+    if first is None:
+        print(info)
+        return 2
+    cold_ms = (time.perf_counter() - t0) * 1000.0
+    times = []
+    for _ in range(3):
+        t0 = time.perf_counter()
+        scene_frame(mod, seg, frame)
+        times.append((time.perf_counter() - t0) * 1000.0)
+    warm_ms = min(times)
+    # 总帧数取场景模块自己的配置: 场景模块 import 时已经 configure 过一遍,
+    # cv.DUR 与 cv.FPS 此时已是这个工程的真实值, 不是引擎缺省值
+    nframes = int(round(getattr(mod, "DUR", cv.DUR) * cv.FPS))
+    print("")
+    print("场景单帧成本: %s" % info)
+    print("  冷首帧 (含背景预渲染与字体加载)   %8.1f ms" % cold_ms)
+    print("  预热后最小值 (3 次里取最小)       %8.1f ms" % warm_ms)
+    print("  整片估算 (持续值 x %d 帧)        %8.1f 秒"
+          % (nframes, warm_ms * nframes / 1000.0))
+    print("  口径: 只量这一帧的绘制, 不含音频合成与编码")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        p = os.path.join(out_dir, "scene_seg%02d_f%04d.png" % (seg, frame))
+        first.save(p)
+        print("  这一帧已存 %s" % p)
+    except Exception as e:
+        print("  存图失败 (不影响上面的计时): %s" % e)
+    return 0
+
+
 def frame_hash(spec):
     """
     确定性检查: 同一帧渲染两次, 比对字节是否一致
@@ -489,12 +618,21 @@ def build_parser():
     p.add_argument("--size", default="1920x1080",
                    help="设计画幅 WxH, 缺省 1920x1080; 超采样倍数沿用 canvas 的 SS=2")
     p.add_argument("--out", default=os.path.join("temp", "perf_probe"),
-                   help="帧写盘段的落盘目录, 缺省 temp/perf_probe, 只写这一个目录")
+                   help="帧写盘段的落盘目录, 缺省 temp/perf_probe, 只写这一个目录; "
+                        "--scene 路线下它是那一帧的落盘目录")
     p.add_argument("--sustained", type=int, default=0, metavar="FRAMES",
                    help="连渲 FRAMES 帧测持续负载单帧耗时 (缺省 240, 给 0 跳过); "
                         "突发基准会骗人, 工期与并行度要用持续值")
     p.add_argument("--hash", action="store_true",
-                   help="同一帧渲两次比对字节哈希, 核确定性")
+                   help="同一帧渲两次比对字节哈希, 核确定性 (核的是探针自造的合成帧; "
+                        "核工程里真正的那一帧用 --scene)")
+    p.add_argument("--scene", default=None, metavar="PATH",
+                   help="场景模块路径. 给了它, --seg 与 --frame 才有意义, "
+                        "并且不再跑四张基准表, 只量这一帧")
+    p.add_argument("--seg", type=int, default=0,
+                   help="配合 --scene: 第几幕, 从 0 起 (默认 0)")
+    p.add_argument("--frame", type=int, default=0,
+                   help="配合 --scene: 该幕第几帧, 从 0 起 (默认 0)")
     return p
 
 
@@ -505,15 +643,26 @@ def main():
         print("--repeat 要大于等于 1")
         return 2
     try:
-        w, h = parse_size(args.size)
+        w, H0 = parse_size(args.size)
     except ValueError as e:
         print(str(e))
         return 2
 
-    cv.configure(W=w, H=h)
+    cv.configure(W=w, H=H0)
+
+    # 场景路线: 量与核的都是工程里真正会编码的那一帧, 不跑四张基准表
+    if args.scene:
+        if args.seg < 0 or args.frame < 0:
+            print("--seg 与 --frame 都要大于等于 0")
+            return 2
+        code = scene_cost(args.scene, args.seg, args.frame, os.path.abspath(args.out))
+        if args.hash:
+            code = scene_determinism(args.scene, args.seg, args.frame) or code
+        return code
+
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
-    frame_png = os.path.join(out_dir, "frame_%dx%d.png" % (w, h))
+    frame_png = os.path.join(out_dir, "frame_%dx%d.png" % (w, H0))
 
     gw, gh = cv.W * cv.SS, cv.H * cv.SS
     spec = FrameSpec()

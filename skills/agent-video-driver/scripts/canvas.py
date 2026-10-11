@@ -17,6 +17,16 @@ import sys
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageChops
+# 帧名与编码参数取自共享定义 (scripts/videoconf.py), 不在本文件另写一份
+
+# 把本文件所在目录挂进 sys.path: 共享模块 (videoconf / fontpaths) 必须能找到,
+# 而本脚本可能以任意工作目录被调用 (工程根, 或 bench 的输出目录)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import videoconf as _videoconf
+import fontpaths as _fontpaths
+
 
 # Windows 的中文控制台默认是 GBK: 字形审计报告会原样打印上屏文本, 遇到 GBK 打不出的字符
 # (例如下标数字) print 会直接抛 UnicodeEncodeError 把渲染流程打断, 所以先把输出流降级
@@ -40,7 +50,9 @@ OX, OY = W / 2.0, H / 2.0
 U = 100.0
 FRAMES = os.path.join("temp", "frames")
 # 帧文件命名的唯一来源: 外部脚本 (编码, 验收, 抽帧) 一律引用它, 不要各写一份字面量
-FRAME_PATTERN = "n%05d.png"
+# 帧文件命名的唯一来源是 scripts/videoconf.py: 渲染落盘侧与全部外部消费方
+# (编码, 抽帧, 验收, 预览, 并行渲染, 编码器基准) 共用同一份定义
+FRAME_PATTERN = _videoconf.FRAME_PATTERN
 
 
 def frame_path(i):
@@ -65,12 +77,10 @@ def footer_y():
     """底部进度线的缺省 y, 距底边 34"""
     return H - round(min(W, H) * 34.0 / 1080.0)
 
-FONT_PATH = {
-    "cnb": r"C:\Windows\Fonts\msyhbd.ttc",
-    "cn": r"C:\Windows\Fonts\msyh.ttc",
-    "mono": r"C:\Windows\Fonts\consolab.ttf",
-    "monor": r"C:\Windows\Fonts\consola.ttf",
-}
+# 字体路径表取自 fontpaths.py: 字形体检 (check_text) 与版面体检 (check_layout)
+# 必须与渲染用同一张表, 否则"体检说缺字形, 渲染却正常"这类假警报无法排查.
+# 跨平台时用 scripts/fonts.py 探测后覆盖这张表, 见该脚本的输出格式
+FONT_PATH = dict(_fontpaths.DEFAULT_FONTS)
 _fc = {}
 BG = None
 
@@ -78,12 +88,8 @@ BG = None
 # 某个字体键缺字符字形时, 按这张表依次尝试链上的下一个字体键
 # 中文字体常常缺上下标与数学符号, 等宽字体反而有; 等宽字体缺中文字形, 回退到中文
 # 不回退的话 Pillow 会静默画成空心方框, 而且不报错, 所以回退是默认行为, 不是可选项
-FALLBACK = {
-    "mono": ("cnb", "cn"),
-    "monor": ("cn", "cnb"),
-    "cnb": ("monor", "mono"),
-    "cn": ("monor", "mono"),
-}
+# 回退链与字体表同源 (fontpaths.py), 新增字体键时只改那一处
+FALLBACK = dict(_fontpaths.FALLBACK)
 # 字形体检用的字号与画布边长, 只用于判断字形是否存在, 与实际上屏字号无关
 GLYPH_SIZE = 64
 GLYPH_BOX = 96

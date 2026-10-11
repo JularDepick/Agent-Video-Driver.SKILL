@@ -52,6 +52,16 @@ import time
 
 import numpy as np
 
+# 帧名与编码参数取自共享定义 (scripts/videoconf.py), 不在本文件另写一份
+
+# 把本文件所在目录挂进 sys.path: 共享模块 (videoconf / fontpaths) 必须能找到,
+# 而本脚本可能以任意工作目录被调用 (工程根, 或 bench 的输出目录)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import videoconf as _videoconf
+
+
 try:
     from PIL import Image, ImageDraw, ImageFont
     HAVE_PIL = True
@@ -95,7 +105,8 @@ SAFE_FRAC = 0.93
 # 首帧亮度下限: 平台拿成片首帧当缩略图, 全黑首帧就是一张全黑封面
 FIRST_FRAME_LUMA = 2.0
 # 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
-FRAME_PATTERN = "n%05d.png"
+# 帧名取自共享定义, 不在这里写第二份
+FRAME_PATTERN = _videoconf.FRAME_PATTERN
 FONTS = (r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\consolab.ttf")
 
 
@@ -117,7 +128,10 @@ def _num(v):
 
 
 def run_cmd(cmd):
-    p = subprocess.run(cmd, capture_output=True)
+    # text=True 配 encoding: 子进程输出按 UTF-8 解, 不靠系统代码页 (中文 Windows 上是
+    # GBK, 会抛 UnicodeDecodeError)
+    p = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     return p.returncode, _text(p.stdout), _text(p.stderr)
 
 

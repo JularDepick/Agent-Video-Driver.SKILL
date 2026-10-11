@@ -38,7 +38,7 @@
 ## 命名规范
 
 | 对象 | 规则 | 示例 |
-|:---:|:---|:---|
+|:---:|:---:|:---:|
 | 技能目录 | 大驼峰或 kebab-case, 与 frontmatter 的 name 对应 | `Agent-Video-Driver` |
 | 简报 | 固定 `brief.md`, 放在 `prompts/` | `prompts/brief.md` |
 | 阶段提示词 | 阶段名小写下划线加 `.md`, 放在 `prompts/` | `prompts/storyboard.md` |
@@ -73,7 +73,7 @@
 本技能的 `.ps1` 只允许用 Windows PowerShell 5.1 就有的能力, 因为 `pwsh` 在只装了系统自带 PowerShell 的机器上不存在. 写脚本前对照下表:
 
 | 类别 | 允许 (5.1 就有) | 禁止 (只有 PowerShell 7 有, 或者会踩坑) |
-|:---:|:---|:---|
+|:---:|:---:|:---:|
 | 整数除法 | `[math]::Floor($a / $b)` 与 `$a % $b` | `[math]::DivRem($a, $b)` 的二参数写法; .NET 只有三参数重载 (要 `[ref]` 承接余数), 5.1 下报 `Cannot find an overload ... argument count: "2"` |
 | 条件取值 | `if () { } else { }` | 三目运算符 `条件 ? 甲 : 乙` |
 | 空合并 | `if ($null -eq $x) { ... }` | `??` 与 `?.` |

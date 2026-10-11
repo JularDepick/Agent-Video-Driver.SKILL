@@ -123,7 +123,7 @@ def grab(video, t, out_path):
     ss = max(0.0, t - 0.5 / 30.0)
     p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", video,
                         "-ss", "%.6f" % ss, "-frames:v", "1", out_path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode != 0 or not os.path.exists(out_path):
         raise RuntimeError("抽帧失败: %s" % (p.stderr or "").strip()[:200])
 

@@ -48,7 +48,10 @@ class AudioEnvError(Exception):
 
 # ----------------------------------------------------------------- 读音频
 def run_cmd(cmd):
-    p = subprocess.run(cmd, capture_output=True)
+    # text=True 配 encoding: 子进程输出按 UTF-8 解, 不靠系统代码页 (中文 Windows 上是
+    # GBK, 会抛 UnicodeDecodeError), errors="replace" 保证个别怪字符不中断整个脚本
+    p = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     err = p.stderr
     if isinstance(err, bytes):
         err = err.decode("utf-8", "replace")

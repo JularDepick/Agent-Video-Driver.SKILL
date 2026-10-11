@@ -207,8 +207,13 @@ def main():
                     help="取 N 张差别大的候选(尽量覆盖响稳轻三档), 交给用户挑")
     ap.add_argument("--check", action="store_true",
                     help="校验 scripts/styles.py 与 references/styles.md 的牌堆是否一致")
-    ap.add_argument("--md", default=os.path.join("references", "styles.md"),
-                    help="--check 要校验的人读牌堆路径, 缺省 references/styles.md")
+    # --md 缺省取技能本体里的 references/styles.md, 按本脚本所在目录反解.
+    # 不按当前工作目录反解: 文档与 SKILL.md 的快捷命令都写的是"从仓库根跑",
+    # 按 CWD 找会在仓库根解析成 <仓库根>/references/styles.md 而不存在.
+    ap.add_argument("--md",
+                    default=os.path.join(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))), "references", "styles.md"),
+                    help="--check 要校验的人读牌堆路径, 缺省取技能本体的 references/styles.md")
     ap.add_argument("--seed", type=int, default=None, help="随机种子, 便于复现")
     ap.add_argument("--tone", choices=styles.TONE_ORDER, default=None,
                     help="只在某一档里取: loud 响 / steady 稳 / light 轻")

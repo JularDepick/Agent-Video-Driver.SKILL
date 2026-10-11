@@ -130,7 +130,8 @@ def run_powershell(script):
         return None
     try:
         p = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
-                           capture_output=True, text=True, timeout=PS_TIMEOUT)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=PS_TIMEOUT)
     except Exception:
         return None
     if p.returncode != 0:
@@ -260,7 +261,8 @@ def probe_hw_encoders():
         return [], "%s: ffmpeg 不在 PATH" % UNAVAILABLE
     try:
         p = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
-                           capture_output=True, text=True, timeout=25)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=25)
         out = (p.stdout or "") + (p.stderr or "")
     except Exception as e:
         return [], "%s: %s" % (UNAVAILABLE, str(e)[:40])
@@ -642,8 +644,13 @@ def write_json(path, data):
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        # 原子写: assemble.ps1 紧接着 Get-Content 读这份报告, 写一半被中断时
+        # 它会拿到截断 JSON, ConvertFrom-Json 静默返回 $null, 于是限额退回内置规则
+        # 而脚本自己毫无察觉. 与 timing.py 的 plan.json 同一口径
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
         print("JSON 已写入 %s" % path)
     except Exception as e:
         print("警告: JSON 写入失败 %s (%s)" % (path, str(e)[:80]))

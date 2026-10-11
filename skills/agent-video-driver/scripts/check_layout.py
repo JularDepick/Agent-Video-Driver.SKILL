@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-静态版面体检: 从场景模块里抽出文字与容器绘制调用, 算出墨迹框与容器框, 查版面缺陷
+静态版面体检: 从场景模块里抽出文字绘制调用, 按真实墨迹算墨迹框, 查压字与越界
 
   python scripts/check_layout.py scene_module.py
   python scripts/check_layout.py scene_module.py --gap-ratio 0.15
   python scripts/check_layout.py scene_module.py --width 1080 --height 1920
   python scripts/check_layout.py scene_module.py --json temp/qa/layout.json
   python scripts/check_layout.py scene_module.py --extra-call caption
-  python scripts/check_layout.py scene_module.py --safe-margin 112 --container --strict
+  python scripts/check_layout.py scene_module.py --safe-margin 112 --strict
 
 为什么要有这一件: 字符图约 20px/列, 45 像素的纵向重叠在字符图上只差 2 列, 无视觉能力时
 靠人眼几乎判不出来. 实测有片子出现"标题卡两行文字字高带重叠 3.5px"与"一行调试残留大字
@@ -24,6 +24,12 @@
 
 本脚本只做静态检查: 它不执行场景模块, 也不渲染整帧. 抽不到的调用不是漏报, 是列进
 未解析清单; 真正的兜底仍然是渲染后逐屏看字符图与拼图.
+
+三条已知边界, 别把它当成完整版面验收:
+  1 只抽文字绘制调用, **不抽容器**: "文字溢出卡片"与"容器内元素没居中"查不出来
+  2 没有时间维度: 只在入场动画某个瞬间才出现的重叠抓不到, 静态过完还要抽帧看
+  3 抽不到引擎内部画的文字 (cv.section 这类封装) 与运行时按数据拼出来的文本
+要补这两类, 靠渲染后的 check_ink.py (框里有没有字) 与字符图, 不是给本脚本加开关.
 """
 import argparse
 import ast
@@ -37,19 +43,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+# 字体路径表的唯一来源 (scripts/fontpaths.py), 与 canvas.FONT_PATH 共用同一份
+import fontpaths as _fontpaths
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
 
-# 字体表与 canvas.FONT_PATH 同源; 拿不到 canvas 时用这张兜底表
-FALLBACK_FONTS = {
-    "cnb": r"C:\Windows\Fonts\msyhbd.ttc",
-    "cn": r"C:\Windows\Fonts\msyh.ttc",
-    "mono": r"C:\Windows\Fonts\consolab.ttf",
-    "monor": r"C:\Windows\Fonts\consola.ttf",
-}
+# 字体表与 canvas.FONT_PATH 同源, 定义在 fontpaths.py; 拿不到 canvas 时用这张兜底表
+FALLBACK_FONTS = dict(_fontpaths.DEFAULT_FONTS)
 
 # 文字绘制调用的参数位置: 0 是位置元组, 1 是字符串, 2 是字号或目标宽度
 TEXT_CALLS = {
@@ -743,7 +747,10 @@ def main(argv=None):
         parent = os.path.dirname(os.path.abspath(args.json_path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(args.json_path, "w", encoding="utf-8") as f:
+        # 原子写: 这个 JSON 是 check_ink.py --blocks 的唯一输入, 写一半被中断
+        # 会让它读到截断 JSON 而报出看不懂的错. 与 timing.py 的 plan.json 同一口径
+        _tmp = args.json_path + ".tmp"
+        with open(_tmp, "w", encoding="utf-8") as f:
             json.dump({"scene": args.scene, "theme": theme_path,
                        "canvas": {"w": w, "h": h, "safe_margin": margin,
                                   "bottom_margin": bottom_margin},
@@ -758,6 +765,7 @@ def main(argv=None):
                        "out_of_bounds": [{"line": o["block"]["line"], "over": o["over"]}
                                          for o in oob]},
                       f, ensure_ascii=False, indent=2)
+        os.replace(_tmp, args.json_path)
         print("")
         print("wrote %s" % args.json_path)
         print("  这份 JSON 是下游的输入: check_ink.py 用它去量每个框里有没有字 "

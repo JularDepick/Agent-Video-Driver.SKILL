@@ -92,7 +92,7 @@ def to_wav(path):
     try:
         p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path, "-ac", "1",
                             "-ar", str(SR), "-c:a", "pcm_s16le", tmp],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
             raise RuntimeError("ffmpeg 解码失败: %s" % (p.stderr or "").strip()[:200])
         return read_wav(tmp)

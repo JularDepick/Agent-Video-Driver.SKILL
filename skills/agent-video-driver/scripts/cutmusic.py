@@ -45,7 +45,7 @@ def read_audio(path):
         tmp = os.path.join("temp", TMP_NAME)
         p = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", path,
                             "-c:a", "pcm_s16le", tmp],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
             raise RuntimeError("ffmpeg 解码失败: %s" % (p.stderr or "").strip()[:200])
         src = tmp

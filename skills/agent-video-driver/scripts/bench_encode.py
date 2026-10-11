@@ -24,12 +24,23 @@
 差一项, 量出来的体积与 PSNR 就不能拿来判"这一档够不够".
 """
 import argparse
+
+# 帧名与编码参数取自共享定义 (scripts/videoconf.py), 不在本文件另写一份
+
+
+
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+# 把本文件所在目录挂进 sys.path: 共享模块 (videoconf / fontpaths) 必须能找到,
+# 而本脚本可能以任意工作目录被调用 (工程根, 或 bench 的输出目录)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import videoconf as _videoconf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -106,22 +117,28 @@ def gop_args(fps, encoder, preset, crf):
     return args
 
 
-def encoder_args(encoder, preset, crf, threads):
-    if encoder == "libx264":
-        return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-threads", str(threads)]
-    if encoder.endswith("_nvenc"):
-        return ["-c:v", encoder, "-preset", preset, "-rc", "vbr", "-cq", str(crf),
-                "-b:v", "0", "-threads", str(threads)]
-    if encoder.endswith("_qsv"):
-        return ["-c:v", encoder, "-preset", "medium", "-global_quality", str(crf),
-                "-threads", str(threads)]
-    return ["-c:v", encoder, "-crf", str(crf), "-threads", str(threads)]
+# setparams 只写帧头标签不碰像素; 用 colorspace 滤镜会真做一次色彩转换,
+# 实测把 PSNR 从 55.2 dB 打到 28.1 dB. 定义与 assemble_core.py 的 COLOR_FILTER 一致.
+COLOR_FILTER = ("format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709"
+                ":colorspace=bt709:range=tv")
+
+
+def encoder_args(encoder, preset, crf, threads, fps=30):
+    """
+    编码参数映射: 真源在 videoconf.py, 与两条生产路线共用同一份
+
+    本脚本存在的意义就是给生产路线做标定, 所以参数必须逐字一致; 曾经在这里
+    另写一份, 于是 tune 与 profile 悄悄漂移, 量出来的体积与 PSNR 就不能拿来判
+    "这一档够不够". 现在只留薄封装.
+    """
+    return _videoconf.encoder_args(encoder, preset, crf, fps) + ["-threads", str(threads)]
 
 
 def vf_args(noise):
+    """滤镜链与两条生产路线逐字一致: 先给帧打色彩标签, 再叠颗粒"""
     if noise <= 0:
-        return ["-vf", "format=yuv420p"]
-    return ["-vf", "noise=alls=%d:allf=t,format=yuv420p" % noise]
+        return ["-vf", COLOR_FILTER]
+    return ["-vf", "%s,noise=alls=%d:allf=t" % (COLOR_FILTER, noise)]
 
 
 def timed(cmd):
@@ -174,7 +191,8 @@ def main(argv=None):
 
     frames = a.frames
     # 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
-    pattern = os.path.join(frames, "n%05d.png")
+    # 帧名走共享定义, 不在这里再写一份字面量
+    pattern = _videoconf.frame_pattern_in(frames)
     if not os.path.isdir(frames):
         print("找不到帧目录: %s" % frames)
         return 2
@@ -215,8 +233,7 @@ def main(argv=None):
         cmd = ([FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
                 "-filter_threads", str(use_threads),
                 "-framerate", str(a.fps), "-i", pattern, "-frames:v", str(count)]
-               + vf_args(noise) + encoder_args(enc, preset, a.crf, use_threads)
-               + gop_args(a.fps, enc, preset, a.crf)
+               + vf_args(noise) + encoder_args(enc, preset, a.crf, use_threads, a.fps)
                + ["-pix_fmt", "yuv420p"] + color_args()
                + ["-movflags", "+faststart", out])
         t, code, tail = timed(cmd)
