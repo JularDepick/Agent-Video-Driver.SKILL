@@ -354,11 +354,66 @@ def collect_blocks(path, resolver, fonts, extra_calls, ss):
     blocks = []
     unresolved = []
 
+    # 疑似画字封装: 属性调用 + 实参含字符串字面量, 但方法名不在已登记集合里.
+    # 这类调用一律进 unresolved, 绝不能静默丢掉 (见下面那段注释).
+    # 量字但不画字的调用: 吃字符串与数值, 却不在画面上留任何东西.
+    # 把它们混进未解析只会让那份列表变噪声, 真正漏检反而被淹掉.
+    MEASURE_ONLY = ("fit_size", "measure", "text_runs", "cap_metrics",
+                    "measure_text", "text_width")
+
+    def looks_like_draw(node):
+        """
+        判据是"实参里有像文案的字符串 **且** 有数值", 两条都要满足:
+
+        - 只有字符串不够: `cv.configure(..., frames="temp/frames_x")` 这类调用也带字符串,
+          但它画不出字, 算进去会让未解析列表变噪声, 反而淹掉真的漏检
+        - 加数值这一条是因为画字调用必有坐标或字号, 路径类调用没有
+        再叠一条"字符串不像路径": 含盘符或分隔符的一律不算屏幕文字
+        """
+        # 只看位置参数里的字符串: 画字调法的文案几乎总是位置参数
+        # (c.text((x, y), "字", size, color)), 而引擎级调用把说明性字符串放在
+        # keyword 上 (configure(frames="temp/..."), ensure_bg(top=(9,17,35))).
+        # 这一刀让 configure 与 ensure_bg 不再被误判成画字封装.
+        has_text = False
+        has_num = False
+        for a in list(node.args):
+            for sub in ast.walk(a):
+                if isinstance(sub, ast.Constant):
+                    v = sub.value
+                    if isinstance(v, str) and v.strip() and "/" not in v \
+                            and "\\" not in v and ":" not in v:
+                        has_text = True
+                    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                        has_num = True
+        return has_text and has_num
+
+    def likely_draw_names(node):
+        """取被调用者与它的根对象名, 例如 c.my_text -> ("my_text", "c")"""
+        fn = node.func
+        root = None
+        if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+            root = fn.value.id
+        return fn.attr, root
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         fn = node.func
-        if not isinstance(fn, ast.Attribute) or fn.attr not in names:
+        if not isinstance(fn, ast.Attribute):
+            continue
+        if fn.attr not in names:
+            # 不是已登记的画字调用, 但长得像 (有字符串实参): 记进未解析并提示.
+            # 只在根对象像画布时才提示 (c / cv / self), 免得把业务方法的
+            # 字符串参数也当成漏检, 那会让未解析列表变成噪声.
+            nm, root = likely_draw_names(node)
+            if nm in MEASURE_ONLY:
+                continue
+            if root in ("c", "cv", "self", "canvas") and looks_like_draw(node):
+                unresolved.append({
+                    "line": node.lineno, "call": nm,
+                    "why": "疑似画字封装但不在 TEXT_CALLS 里, 已跳过几何计算",
+                    "snippet": source_line(src_lines, node),
+                })
             continue
         spec = names[fn.attr]
         line = node.lineno
@@ -660,6 +715,8 @@ def print_report(blocks, unresolved, hits, tight, branch, gap_ratio, oob=(), saf
     if unresolved:
         print("")
         print("[未解析] %d 处调用算不出几何, 需要人工核对:" % len(unresolved))
+        print("      其中标了 \"疑似画字封装\" 的, 若它确实会画字, 把它加进 TEXT_CALLS")
+        print("      或用 --extra-call 声明一次, 否则版面检查会整体跳过这个封装")
         for u in unresolved[:40]:
             print("  行 %d %s: %s" % (u["line"], u["call"], u["why"]))
             if u["source"]:

@@ -365,8 +365,29 @@ def texts_from_source(path, with_docstring=False, drawn_only=False):
     return out
 
 
+# 全部合法开关与选项, 缺省不做 argparse 是因为它还要接任意多个位置参数当待体检文本;
+# 但"不认识的 token 到底是开关还是文本"必须分清, 否则拼错的开关会被当成文本,
+# 体检一段错的字符串然后报绿灯. 这里显式列出合法集合来分这一刀.
+KNOWN_FLAGS = ("--with-docstring", "--drawn-only", "--help", "-h")
+KNOWN_OPTS = ("--font", "--from-plan", "--from-source", "--call-kind")
+
+
+def usage():
+    return ("用法: check_text.py [待体检文本...] [选项]\n"
+            "  --from-source <场景模块>   抽源码里的字符串字面量\n"
+            "  --from-plan <plan.json>     抽 plan.json 里每屏的上屏文字\n"
+            "  --drawn-only               只收画字调用的实参与被它引用的模块级常量\n"
+            "  --with-docstring           连 docstring 一起收 (默认跳过)\n"
+            "  --call-kind <名>=<字体键>   声明自定义封装用哪个字体键, 可重复给\n"
+            "  --font <字体键>             只体检这一个字体键\n"
+            "  退出码: 0 全部有字形; 1 有缺字形或没抽到文本; 2 用法错误")
+
+
 def main():
     args = sys.argv[1:]
+    if any(a in ("--help", "-h") for a in args):
+        print(usage())
+        return 0
     kinds = list(FONTS)
     texts = []
     sources = []
@@ -384,20 +405,20 @@ def main():
         if args[i] == "--font":
             if i + 1 >= len(args):
                 print("--font 需要一个字体键: %s" % " ".join(FONTS))
-                return 1
+                return 2
             kinds = [args[i + 1]]
             i += 2
         elif args[i] == "--from-plan":
             if i + 1 >= len(args):
                 print("--from-plan 需要 plan.json 路径")
-                return 1
+                return 2
             sources.append(("--from-plan %s" % args[i + 1],
                             texts_from_plan(args[i + 1])))
             i += 2
         elif args[i] == "--from-source":
             if i + 1 >= len(args):
                 print("--from-source 需要场景模块路径")
-                return 1
+                return 2
             if drawn_only:
                 # 这一档连字体键一起抽出来: 只有真正用 mono 画的中文才算缺字形,
                 # 拿中文文案去撞 mono 是纯噪声, 实测模板里 21 个汉字全是这种误报
@@ -415,13 +436,22 @@ def main():
         elif args[i] == "--call-kind":
             if i + 1 >= len(args) or "=" not in args[i + 1]:
                 print("--call-kind 需要 NAME=KIND 形式, 例如 --call-kind caption=cnb")
-                return 1
+                return 2
             cname, _, ckind = args[i + 1].partition("=")
             if ckind not in FONTS:
                 print("--call-kind 的字体键 %s 不认识, 可用: %s" % (ckind, " ".join(FONTS)))
-                return 1
+                return 2
             call_kinds[cname.strip()] = ckind
             i += 2
+        elif args[i].startswith("-") and args[i] != "-":
+            # 不认识的开关: 报用法错误而不是当文本. 这一刀是本脚本最容易踩的坑:
+            # 拼错一个开关就体检了错的字符串, 结果几乎必然全过, 退出码 0, 假绿灯.
+            if args[i] in KNOWN_FLAGS:
+                i += 1
+                continue
+            print("不认识的选项: %s" % args[i])
+            print(usage())
+            return 2
         else:
             texts.append(args[i])
             i += 1

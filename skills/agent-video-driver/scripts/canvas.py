@@ -657,7 +657,11 @@ class C:
         self.zoom = 1.0
         self.dx = 0.0
         self.dy = 0.0
+        # 分层栈. 遗留的层必须在每帧开头收干净: begin() 之后忘了 end() 时, 那一帧的
+        # 绘制会落在一张全透明层上, 直接落盘就是一张黑片 (背景整个丢失), 而且不报错.
+        # _stale_layer 记下是哪一帧开的层, 收的时候用它提示"第 N 帧开了一层没关".
         self._layers = []
+        self._stale_layer = None
 
     def begin(self, size=None):
         """
@@ -679,7 +683,36 @@ class C:
         self._layers.append((self.img, self.d, layer, ImageDraw.Draw(layer, "RGBA")))
         self.img = layer
         self.d = self._layers[-1][3]
+        if self._stale_layer is None:
+            self._stale_layer = self.frame_index()
         return layer
+
+    def frame_index(self):
+        """当前正在渲的帧号 (由 render_frame 设置); 没在渲时返回 None"""
+        return getattr(self, "_frame_idx", None)
+
+    def settle_layers(self, warn=True):
+        """
+        收掉所有遗留的层, 返回收掉的层数.
+
+        每帧开头必调. begin() 之后忘了 end() 时, 层会跨帧残留, 之后所有帧都画在
+        透明层上, 落盘是一张张黑片; 这里把它收干净, 并打一条提示把原因指到具体帧号,
+        而不是让整条片子静默变黑.
+        """
+        n = len(self._layers)
+        while self._layers:
+            base, _d, layer, _ld = self._layers.pop()
+            merged = base.convert("RGBA")
+            merged.alpha_composite(layer)
+            self.img = merged.convert("RGB")
+        if n and warn:
+            f = self._stale_layer
+            print("[警告] 第 %s 帧开了一层 (begin) 没有对应的 end(), 已强制合回; "
+                  "它会让那一帧之后的画面全部画在透明层上, 落盘变成黑片. "
+                  "begin 与 end 必须成对." % ("?" if f is None else f))
+        self._stale_layer = None
+        self.d = ImageDraw.Draw(self.img, "RGBA")
+        return n
 
     def end(self, alpha=1.0, mode="over"):
         """
@@ -695,10 +728,16 @@ class C:
         if alpha < 0.995:
             layer = layer.point(lambda v: int(v * clamp(alpha)))
         if mode == "multiply":
-            # 乘法要按 alpha 加权: 半透明处不能把底下压全黑, 否则一层淡描边会糊成脏块
-            flat = Image.new("RGBA", base.size, (255, 255, 255, 255))
-            merged = ImageChops.multiply(flat, layer)
-            base = Image.composite(merged, base, layer.getchannel("A"))
+            # 乘法按 alpha 加权: 结果 = base * (1 - a + a * layer/255).
+            # 这样层透明处完全不动, 有内容处按该色明度压下去; 与 printkit 的
+            # multiply_img 是同一套直觉. 早先的写法拿一张白底去乘整层, 会把
+            # 半透明内容当成不透明色去乘, "画一个白盘再 multiply" 反而压不出白.
+            a = np.asarray(layer.getchannel("A"), dtype=np.float32) / 255.0
+            lay = np.asarray(layer.convert("RGB"), dtype=np.float32)
+            base_a = np.asarray(base.convert("RGB"), dtype=np.float32)
+            f = (1.0 - a)[:, :, None] + a[:, :, None] * (lay / 255.0)
+            merged = np.clip(base_a * f, 0, 255).astype(np.uint8)
+            base = Image.fromarray(merged, "RGB")
         else:
             flat = base.convert("RGBA")
             flat.alpha_composite(layer)
@@ -1495,9 +1534,14 @@ def render_frame(scene_pick, t, cam=None):
     TypeError: unsupported operand type(s) for *: 'float' and 'function', 见到就查这里
     """
     c = C()
+    c._frame_idx = int(round(t * FPS))
     if cam is not None:
         c.cam(cam(t) if callable(cam) else cam)
     scene_pick(t)(c, t)
+    # 场景里 begin 之后忘了 end 时, 这一刻 self.img 还是一张透明层; 不收的话
+    # 落盘就是一张黑片, 场景自己的背景整个丢失, 而且全程不报错. 这里强制收干净,
+    # 并把帧号一起报出来, 让它是一条能看见的提示而不是一整条黑片.
+    c.settle_layers()
     return c.img.reduce(SS)
 
 

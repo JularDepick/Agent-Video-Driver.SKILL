@@ -318,6 +318,13 @@ def main():
     if a.md_path:
         write_md(a.md_path, groups)
         print("wrote %s" % a.md_path)
+    # any_fail 已经算出来了, 就让它落到退出码上: 0 全部通过, 1 有不合格项,
+    # 2 用法或量测失败 (前面已返回). 只打印不改退出码的话, 按退出码判断的自动化
+    # 分不出"跑过了"和"合格", 判据就只是一段输出文本.
+    if any_fail:
+        print("")
+        print("[不合格] 上面标 [不合格] 的项都需处理后再交付")
+        return 1
     return 0
 
 

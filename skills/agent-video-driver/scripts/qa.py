@@ -17,7 +17,7 @@
     偏差按帧算, 超过 1 帧判为不合格
   2 每屏抽 1 帧, 时间取 屏幕起点 + 0.8 * 屏时长, 避开入场动画未完成的那一段;
     时间已经越过片尾的屏进跳过清单, 于是短的试渲染也能对上整片的计划
-  3 逐屏表带幕号 (凭幕号猜屏号是返工根源, 反查用 scene_module.py screen N), 带 p95
+  3 逐屏表带幕号 (凭幕号猜屏号是返工根源, 反查用 scene_module.py screen N), 带 p95 与 p99
      与上一屏的 MAE 列带自动判定: 低于 1.0 提示"几乎一样", 低于 0.3 提示"疑似重复屏";
      帧序列模式开跑前先查帧目录是否正在被重渲, 正在重渲时打印醒目警告 (那时的表不可信)
   4 成片模式: 锚点屏抽 切点前一帧 与 切点后一帧, 用 Pillow 算 MAE 与平均亮度差,
@@ -484,8 +484,36 @@ def extract_from_frames(frames_dir, screens, fps, dur):
     return got, skipped
 
 
+# 亮部判据的两档门槛, 与 brightness.py 的 P95_MIN / P99_MIN 同一口径.
+# 为什么两档: p95 本质在量亮色像素的面积占比, 不是在量对比度; 暗场蓝底占 75% 像素而
+# 亮字面积不足 5% 的屏, p95 天然落在底色亮度上, 与"白字不够亮"无关.
+P95_MIN = 120.0
+P99_MIN = 120.0
+
+
 def p95_of(l):
     return float(np.percentile(l, 95))
+
+
+def p99_of(l):
+    """p99 与 p95 的作用不同: p95 量的是亮色像素的面积占比, p99 量的是亮部峰值本身.
+    暗场构图 (大面积暗底 + 少量亮字) 的 p95 会落在底色亮度上, 与"白字够不够亮"无关,
+    所以偏暗必须两档一起看. 阈值与 brightness.py 的 judge() 同一口径."""
+    return float(np.percentile(l, 99))
+
+
+def dark_verdict(p95, p99):
+    """
+    偏暗判定, 返回 (是否不合格, 标注文字)
+
+    两档: p95 与 p99 达标其一就算合格, 两个都低于门槛才判不合格.
+    只报 p95 的话暗场构图会被成片误伤; 只报 p99 的话大面积发白的屏会漏判.
+    """
+    if p95 < P95_MIN and p99 < P99_MIN:
+        return True, "偏暗 (p95 %.1f 与 p99 %.1f 都低于 %.0f)" % (p95, p99, P95_MIN)
+    if p95 < P95_MIN:
+        return False, "p95 %.1f 偏低但 p99 %.1f 达标, 暗场构图的正常现象" % (p95, p99)
+    return False, ""
 
 
 def warn_if_rewriting(frames_dir):
@@ -522,13 +550,13 @@ def warn_if_rewriting(frames_dir):
 
 def screen_table(got):
     """
-    屏号 | 幕 | 时间 | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏的 MAE | 唯一色 | 饱和度
+    屏号 | 幕 | 时间 | 帧文件 | 平均亮度 | p95 | p99 | 高亮占比 | 与上一屏的 MAE | 唯一色 | 饱和度
 
     新增的两列一律排在原有列之后: 逐屏表是给人扫的, 但已有人按列序号取数,
     把新列插进中间会让旧取数整体错位一格
     """
     print("")
-    print("屏号 | 幕 | 时间s | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏MAE | 唯一色 | 饱和度")
+    print("屏号 | 幕 | 时间s | 帧文件 | 平均亮度 | p95 | p99 | 高亮占比 | 与上一屏MAE | 唯一色 | 饱和度")
     prev = None
     rows = []
     suspects = []
@@ -538,6 +566,7 @@ def screen_table(got):
         l = lum_of(a)
         mean = float(l.mean())
         p95 = p95_of(l)
+        p99 = p99_of(l)
         bright = float((l > 140).mean())
         uniq = uniq_colors(a)
         sat = mean_sat(a)
@@ -551,22 +580,33 @@ def screen_table(got):
                 mark = "  <- 相邻屏几乎一样"
                 suspects.append((it["n"], d, "几乎一样"))
         kinds = []
+        notes = []
         if mean < BLANK_LUMA or uniq < BLANK_UNIQ:
             kinds.append("空场")
         if sat < FLAT_SAT and uniq < FLAT_UNIQ:
             kinds.append("平板")
+        # 偏暗: p95 与 p99 达标其一就算合格, 两个都低于门槛才判不合格.
+        # 只看 p95 会误伤暗场构图 (大面积暗底 + 少量亮字时 p95 落在底色亮度上),
+        # 这正是历史上把 27 屏里的 11 屏误判成不合格的那一轮.
+        dark_bad, dark_note = dark_verdict(p95, p99)
+        if dark_bad:
+            kinds.append("偏暗")
+        elif dark_note:
+            notes.append(dark_note)
         if kinds:
             mark += "  <- " + "/".join(kinds)
             flats.append((it["n"], mean, uniq, sat, kinds))
+        if notes:
+            mark += "  <- " + "; ".join(notes)
         rows.append({"n": it["n"], "t": it["t"], "path": it["path"],
-                     "mean": mean, "p95": p95, "bright": bright, "mae_prev": d,
+                     "mean": mean, "p95": p95, "p99": p99, "bright": bright, "mae_prev": d,
                      "uniq": uniq, "sat": sat,
                      "text": it["text"], "act": it.get("act", ""),
                      "act_title": it.get("act_title", ""), "scene": it.get("scene", "")})
         prev = a
-        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %8.3f | %s | %6d | %6.4f%s"
+        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %5.1f | %8.3f | %s | %6d | %6.4f%s"
               % (it["n"], ("%2d" % it["act"]) if it.get("act") else " -",
-                 it["t"], it["path"], mean, p95, bright,
+                 it["t"], it["path"], mean, p95, p99, bright,
                  "-" if d is None else "%8.2f" % d, uniq, sat, mark))
     if suspects:
         print("")

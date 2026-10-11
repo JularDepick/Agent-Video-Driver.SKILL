@@ -167,6 +167,9 @@ def main(argv=None):
         "不合格: 先查帧对齐 (--redo), 再查 CRF" if v < 40.0 else "偏低, 查 CRF 与帧对齐")
     print("PSNR average: %.2f dB  判据高于 %.0f dB, %s" % (v, PSNR_FLOOR, verdict))
     print("参照口径: 源帧 [0:v] 对视频 [1:v]; 对成片量只应比视频流口径低不到 0.5dB")
+    # 算出了结论就落到退出码上: 铁律 11 要求 PSNR 高于 45dB, 只打印的话按退出码
+    # 判断的自动化会把它当通过. 退出码 0 合格, 1 不合格, 2 量测失败 (上面已返回).
+    below = v < PSNR_FLOOR
 
     if a.json_path:
         parent = os.path.dirname(os.path.abspath(a.json_path))
@@ -177,6 +180,9 @@ def main(argv=None):
                        "count": a.count, "fps": a.fps,
                        "psnr_average": v}, fp, ensure_ascii=False, indent=2)
         print("wrote %s" % a.json_path)
+    if below:
+        print("[不合格] PSNR %.2f dB 低于 %.0f dB 的判据, 不合格" % (v, PSNR_FLOOR))
+        return 1
     return 0
 
 
