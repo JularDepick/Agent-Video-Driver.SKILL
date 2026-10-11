@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-静态版面体检: 从场景模块里抽出全部文字绘制调用, 两两检查墨迹框是否相交
+静态版面体检: 从场景模块里抽出文字与容器绘制调用, 算出墨迹框与容器框, 查版面缺陷
 
   python scripts/check_layout.py scene_module.py
   python scripts/check_layout.py scene_module.py --gap-ratio 0.15
   python scripts/check_layout.py scene_module.py --width 1080 --height 1920
   python scripts/check_layout.py scene_module.py --json temp/qa/layout.json
   python scripts/check_layout.py scene_module.py --extra-call caption
+  python scripts/check_layout.py scene_module.py --safe-margin 112 --container --strict
 
 为什么要有这一件: 字符图约 20px/列, 45 像素的纵向重叠在字符图上只差 2 列, 无视觉能力时
 靠人眼几乎判不出来. 实测有片子出现"标题卡两行文字字高带重叠 3.5px"与"一行调试残留大字
@@ -496,6 +497,23 @@ def collect_blocks(path, resolver, fonts, extra_calls, ss):
     return blocks, unresolved
 
 
+def jsonable(value):
+    """
+    把块里的集合类型转成 JSON 能写的形态
+
+    tags 是 frozenset, 直接进 json.dump 会抛 Object of type frozenset is not JSON
+    serializable, 于是 --json 落不出文件, 而下游的 check_ink.py 正靠这份 JSON 拿框的
+    位置. 排序后再转列表, 保证同一份源码每次落出的 JSON 字节一致
+    """
+    if isinstance(value, (set, frozenset)):
+        return sorted(str(x) for x in value)
+    if isinstance(value, dict):
+        return {k: jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    return value
+
+
 def overlaps(a, b):
     return (a["left"] < b["right"] and b["left"] < a["right"]
             and a["top"] < b["bottom"] and b["top"] < a["bottom"])
@@ -539,12 +557,41 @@ def analyse(blocks, gap_ratio):
     return hits, tight, branch
 
 
+def out_of_bounds(blocks, w, h, margin, bottom_margin):
+    """
+    逐块检查墨迹框是否超出安全边距
+
+    越界与压字是两类不同的问题: 压字是块与块互相压, 越界是块自己贴到了画面边上.
+    贴边的文字在平台 UI (进度条, 标题栏, 竖屏的上下安全区) 上会被遮掉一部分, 而
+    逐屏亮度与字符图都看不出来
+
+    bottom_margin 单独放宽: 底部字幕带与底部进度线是版面家具, 它们的 y 由
+    canvas.caption_y() 与 canvas.footer_y() 定, 本来就贴着下沿, 按左右上三边的
+    边距去卡会满屏误报
+    """
+    bad = []
+    for b in blocks:
+        r = b["rect"]
+        over = []
+        if r["left"] < margin:
+            over.append("左越界 %d px" % int(margin - r["left"]))
+        if r["top"] < margin:
+            over.append("上越界 %d px" % int(margin - r["top"]))
+        if r["right"] > w - margin:
+            over.append("右越界 %d px" % int(r["right"] - (w - margin)))
+        if r["bottom"] > h - bottom_margin:
+            over.append("下越界 %d px" % int(r["bottom"] - (h - bottom_margin)))
+        if over:
+            bad.append({"block": b, "over": over})
+    return bad
+
+
 def preview(s, n=18):
     s = s.replace("\n", " ")
     return s if len(s) <= n else s[:n] + "..."
 
 
-def print_report(blocks, unresolved, hits, tight, branch, gap_ratio):
+def print_report(blocks, unresolved, hits, tight, branch, gap_ratio, oob=(), safe=(0, 0, 0)):
     print("=" * 84)
     print("版面静态体检: 文字绘制调用 %d 处, 涉及 %d 个函数"
           % (len(blocks), len(set(b["func"] for b in blocks))))
@@ -571,6 +618,19 @@ def print_report(blocks, unresolved, hits, tight, branch, gap_ratio):
             print("      %s" % h["b"]["source"])
     else:
         print("[硬撞] 无: 同一函数内没有文本块的墨迹框相交")
+
+    print("")
+    if oob:
+        print("[越界] %d 个文本块的墨迹框超出安全边距, 会被平台 UI 遮掉一部分:" % len(oob))
+        for o in oob:
+            b = o["block"]
+            r = b["rect"]
+            print("  行 %d \"%s\" (%s): %s"
+                  % (b["line"], preview(b["text"]), b["func"], ", ".join(o["over"])))
+            print("      墨迹框 x %.1f 到 %.1f, y %.1f 到 %.1f; %s"
+                  % (r["left"], r["right"], r["top"], r["bottom"], b["source"]))
+    else:
+        print("[越界] 无: 全部文本块的墨迹框都在安全边距内")
 
     print("")
     if tight:
@@ -621,6 +681,12 @@ def main(argv=None):
                     help="纵向最小留白, 单位是较大那一块的字号 (缺省 %.2f)" % DEFAULT_GAP_RATIO)
     ap.add_argument("--extra-call", action="append", default=[], metavar="NAME",
                     help="额外当作文字绘制调用的方法名 (与 text 同签名), 可重复")
+    ap.add_argument("--safe-margin", type=float, default=None, metavar="PX",
+                    help="安全边距像素; 不给时按画幅短边的 10.4%% 折算 (与 canvas.margin_px() 同口径), "
+                         "给 0 表示不查越界")
+    ap.add_argument("--bottom-margin", type=float, default=None, metavar="PX",
+                    help="下沿安全边距像素; 不给时取安全边距与画幅短边 180/1080 的较大值, "
+                         "因为底部字幕带本来就贴着下沿, 按左右上三边去卡会满屏误报")
     ap.add_argument("--json", dest="json_path", default=None, help="把结果写成 JSON")
     ap.add_argument("--strict", action="store_true",
                     help="有未解析项或太挤项时也判不合格 (缺省只报不合格于硬撞)")
@@ -649,7 +715,29 @@ def main(argv=None):
     blocks, unresolved = collect_blocks(args.scene, resolver, fonts,
                                         args.extra_call, ss)
     hits, tight, branch = analyse(blocks, args.gap_ratio)
-    print_report(blocks, unresolved, hits, tight, branch, args.gap_ratio)
+
+    # 画幅取 theme 与覆盖之后的实际值, 越界判据要用它算安全边距.
+    # 常量是表达式节点 (module_constants 故意只收节点), 所以走 Resolver.value 求值,
+    # 直接读 dict 拿到的是 ast 节点而不是数字
+    w = resolver.value(ast.Name(id="W", ctx=ast.Load()))
+    h = resolver.value(ast.Name(id="H", ctx=ast.Load()))
+    if w is None:
+        w = float(getattr(cv, "W", 1920) or 1920)
+    if h is None:
+        h = float(getattr(cv, "H", 1080) or 1080)
+    short = min(w, h)
+    if args.safe_margin is not None:
+        margin = float(args.safe_margin)
+    else:
+        margin = round(short * 112.0 / 1080.0)
+    if args.bottom_margin is not None:
+        bottom_margin = float(args.bottom_margin)
+    else:
+        bottom_margin = max(margin, round(short * 180.0 / 1080.0))
+    oob = out_of_bounds(blocks, w, h, margin, bottom_margin) if margin > 0 else []
+
+    print_report(blocks, unresolved, hits, tight, branch, args.gap_ratio,
+                 oob, (margin, bottom_margin, short))
 
     if args.json_path:
         parent = os.path.dirname(os.path.abspath(args.json_path))
@@ -657,19 +745,27 @@ def main(argv=None):
             os.makedirs(parent, exist_ok=True)
         with open(args.json_path, "w", encoding="utf-8") as f:
             json.dump({"scene": args.scene, "theme": theme_path,
-                       "blocks": blocks, "unresolved": unresolved,
-                       "collisions": [{"a": h["a"]["line"], "b": h["b"]["line"],
-                                       "overlap_x": h["overlap_x"],
-                                       "overlap_y": h["overlap_y"]} for h in hits],
-                       "branch_collisions": [{"a": h["a"]["line"], "b": h["b"]["line"],
-                                              "overlap_y": h["overlap_y"]} for h in branch],
+                       "canvas": {"w": w, "h": h, "safe_margin": margin,
+                                  "bottom_margin": bottom_margin},
+                       "blocks": [jsonable(b) for b in blocks], "unresolved": unresolved,
+                       "collisions": [{"a": c["a"]["line"], "b": c["b"]["line"],
+                                       "overlap_x": c["overlap_x"],
+                                       "overlap_y": c["overlap_y"]} for c in hits],
+                       "branch_collisions": [{"a": c["a"]["line"], "b": c["b"]["line"],
+                                              "overlap_y": c["overlap_y"]} for c in branch],
                        "tight": [{"a": t["a"]["line"], "b": t["b"]["line"],
-                                  "gap": t["gap"], "need": t["need"]} for t in tight]},
+                                  "gap": t["gap"], "need": t["need"]} for t in tight],
+                       "out_of_bounds": [{"line": o["block"]["line"], "over": o["over"]}
+                                         for o in oob]},
                       f, ensure_ascii=False, indent=2)
         print("")
         print("wrote %s" % args.json_path)
+        print("  这份 JSON 是下游的输入: check_ink.py 用它去量每个框里有没有字 "
+              "(python scripts/check_ink.py <帧.png> --blocks %s)" % args.json_path)
 
     if hits:
+        return 1
+    if oob:
         return 1
     if args.strict and (unresolved or tight):
         return 1

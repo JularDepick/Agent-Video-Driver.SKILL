@@ -18,6 +18,10 @@
   编码开销约等于 "整段耗时减去解码加滤镜耗时", 换路线前先看这一栏
 
 输出产物落在 --out-dir (缺省 temp/_bench), 属于中间产物, 可以直接删.
+
+编码参数 (bt709 色彩标签, 固定 GOP, libx264 的 tune animation 与 profile high) 与生产路线
+的 assemble_core.py / assemble.ps1 逐字一致: 本脚本的目的就是给生产路线做标定, 两边参数
+差一项, 量出来的体积与 PSNR 就不能拿来判"这一档够不够".
 """
 import argparse
 import os
@@ -78,6 +82,28 @@ def suggest_threads():
         return int(resources.suggest_limits(scope="encode")["threads"])
     except Exception:
         return max(1, min((os.cpu_count() or 4) // 4, 8))
+
+
+def color_args():
+    """
+    显式写出 bt709 三个色彩标签与限幅范围
+
+    与 assemble_core.py / assemble.ps1 的生产编码命令保持一致: 本脚本量出来的体积与
+    PSNR 要能直接拿来当生产路线的标定, 参数差一项就标定不上了
+    """
+    return ["-colorspace", "bt709", "-color_primaries", "bt709",
+            "-color_trc", "bt709", "-color_range", "tv"]
+
+
+def gop_args(fps, encoder, preset, crf):
+    """固定 GOP 并与生产命令同一套映射; tune 只对有确定语义的两族编码器给"""
+    k = str(int(round(fps)))
+    args = ["-g", k, "-keyint_min", k]
+    if encoder == "libx264":
+        args += ["-sc_threshold", "0", "-tune", "animation", "-profile:v", "high"]
+    elif encoder.endswith("_nvenc"):
+        args += ["-tune", "hq", "-profile:v", "high"]
+    return args
 
 
 def encoder_args(encoder, preset, crf, threads):
@@ -190,7 +216,9 @@ def main(argv=None):
                 "-filter_threads", str(use_threads),
                 "-framerate", str(a.fps), "-i", pattern, "-frames:v", str(count)]
                + vf_args(noise) + encoder_args(enc, preset, a.crf, use_threads)
-               + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", out])
+               + gop_args(a.fps, enc, preset, a.crf)
+               + ["-pix_fmt", "yuv420p"] + color_args()
+               + ["-movflags", "+faststart", out])
         t, code, tail = timed(cmd)
         if code != 0:
             print("失败 %-22s %s" % (name, tail.strip()[-120:]))

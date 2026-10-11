@@ -18,6 +18,12 @@
   亮部决定字幕亮度, 白字约 200 到 250; p95 与 p99 达标其一即算通过
     (暗场少亮元素的构图里, 亮字面积不足 5%, p95 天然落在底色亮度上, 只看 p95 会系统性误报)
   均值偏离参考 2 倍以上说明管线有问题, 不要用调色去补
+   近黑 (luma < 18) 与近白 (luma > 250) 的占比各报一个数:
+     亮色系画面上出现近黑像素, 说明有纯黑残留 (忘了填的底, 蒙版没盖住的边);
+     暗色系上把文字写成纯白, 换到浅底平台就整段隐形, 近白占比高才看得出这个风险
+   色带统计最长同值连续段与这种段的总数:
+     相邻像素完全同值的大段就是 banding 的信号. 是否算问题取决于画面本身有没有
+     大面积渐变 (纯色块的同值段天然很长但不是色带), 所以只给数不给阈值
 """
 import argparse
 import json
@@ -37,16 +43,55 @@ P95_MIN = 120.0
 P99_MIN = 120.0
 # 亮部面积占比低于这个值时, p95 必然落在底色亮度上, 不能拿它判"白字不亮"
 BRIGHT_FRAC_LOW = 0.05
+# 近黑与近白的判定线. 这两个值比 DARK_MAX 与 BRIGHT_MIN 更极端, 量的是"画面上有没有
+# 纯黑残留"与"有没有写成纯白的字", 而不是底色深浅
+NEAR_BLACK = 18.0
+NEAR_WHITE = 250.0
+# 色带统计里算作一段的最短同值连续长度; 比这更短的同值段是纯色块之间的正常边界
+BAND_MIN_RUN = 3
 
 
 def luma(a):
     return 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
 
 
+def banding(y, min_run=BAND_MIN_RUN):
+    """
+    色带 (banding) 的阶跃统计: 返回 (最长同值连续段的长度, 这种段的总数)
+
+    大面积渐变被量化成 8 bit 后, 相邻像素会有一长串完全同值, 人眼看到的就是一圈圈的
+    色带. 所以统计每行里"相邻像素亮度差为 0"的连续段: 渐变越平滑越宽, 这种段越长.
+    只数长度达到 min_run 的段, 短段是纯色块之间的正常边界, 数进来会淹没信号.
+    这里不给硬性阈值: 画面本来就是纯色块时同值段天然很长却没有色带, 是否算问题取决于
+    这一帧有没有大面积渐变, 那要人看字符图才知道
+
+    段边界靠两次 diff 找: 首尾各补一个 False 后, 每个 True 段必然贡献一个 +1 与一个 -1,
+    按行取到的起点与终点天然两两对齐. 逐行逐列写 Python 循环要跑两百万步, 太慢.
+    段长按像素数算 (差的个数加 1): 报"10 个像素连着同值"比报"9 个相邻差为 0"直观
+    """
+    yi = np.rint(y).astype(np.int64)
+    if yi.shape[1] < 2:
+        return 0, 0
+    same = (np.diff(yi, axis=1) == 0)
+    padded = np.zeros((same.shape[0], same.shape[1] + 2), dtype=np.int8)
+    padded[:, 1:-1] = same.astype(np.int8)
+    d = np.diff(padded, axis=1)
+    starts = np.argwhere(d == 1)[:, 1]
+    ends = np.argwhere(d == -1)[:, 1]
+    if starts.size == 0:
+        return 0, 0
+    lengths = (ends - starts) + 1
+    kept = lengths[lengths >= min_run]
+    if kept.size == 0:
+        return 0, 0
+    return int(kept.max()), int(kept.size)
+
+
 def measure(path):
     """量一张图的亮度统计, 返回 dict"""
     a = np.asarray(Image.open(path).convert("RGB")).astype(np.float32)
     y = luma(a)
+    bl, bt = banding(y)
     return {
         "file": path,
         "size": [int(a.shape[1]), int(a.shape[0])],
@@ -56,6 +101,10 @@ def measure(path):
         "p99": round(float(np.percentile(y, 99)), 2),
         "dark_frac": round(float((y < DARK_MAX).mean()), 4),
         "bright_frac": round(float((y > BRIGHT_MIN).mean()), 4),
+        "near_black_frac": round(float((y < NEAR_BLACK).mean()), 4),
+        "near_white_frac": round(float((y > NEAR_WHITE).mean()), 4),
+        "band_longest": bl,
+        "band_runs": bt,
         "median_rgb": [round(float(np.median(a[..., k])), 1) for k in range(3)],
     }
 
@@ -146,15 +195,17 @@ def write_md(path, groups):
     """
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
-    lines = ["| 输入 | 时刻s | 均值 | 中位数 | p95 | p99 | 暗部 | 亮部 | 提示 |",
-             "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|"]
+    lines = ["| 输入 | 时刻s | 均值 | 中位数 | p95 | p99 | 暗部 | 亮部 | 近黑 | 近白 | 同值段 | 段数 | 提示 |",
+             "|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|"]
     for label, rows, notes in groups:
         tip = "有 %d 条, 见输出" % len(notes) if notes else "-"
         for t, m in rows:
-            lines.append("| %s | %s | %.2f | %.2f | %.1f | %.2f | %.4f | %.4f | %s |"
+            lines.append("| %s | %s | %.2f | %.2f | %.1f | %.2f | %.4f | %.4f | %.4f | %.4f | %d | %d | %s |"
                          % (label, "-" if t is None else "%.2f" % t,
                             m["mean"], m["median"], m["p95"], m["p99"],
-                            m["dark_frac"], m["bright_frac"], tip))
+                            m["dark_frac"], m["bright_frac"],
+                            m["near_black_frac"], m["near_white_frac"],
+                            m["band_longest"], m["band_runs"], tip))
     with open(path, "w", encoding="utf-8") as fp:
         fp.write("\n".join(lines) + "\n")
 
@@ -209,6 +260,14 @@ def main():
     print("=" * 66)
     print("亮度标定: %d 个输入" % len(a.inputs))
     print("=" * 66)
+    print("新增三列的读法:")
+    print("  近黑占比是 luma < %.0f 的像素占比: 亮色系画面上它不是 0, 说明有纯黑残留"
+          % NEAR_BLACK)
+    print("  近白占比是 luma > %.0f 的像素占比: 暗色系画面上它高, 说明文字写成了纯白, "
+          "换浅底时会隐形" % NEAR_WHITE)
+    print("  同值段与段数是相邻像素亮度完全相等的最长连续段长度与这种段的总数: "
+          "大段同值是色带的信号, 但是否算问题取决于这一帧有没有大面积渐变, "
+          "纯色块的同值段天然很长, 所以不给阈值")
     any_fail = False
     any_info = False
     for src, rows, notes in groups:
@@ -222,6 +281,11 @@ def main():
                      m["p99"], m["dark_frac"], m["bright_frac"]))
         print("中位数 RGB: " + "   ".join(
             "%s -> %s" % ("-" if t is None else "%.1fs" % t, m["median_rgb"]) for t, m in rows))
+        print("%-10s %8s %8s %8s %8s" % ("时刻(s)", "近黑", "近白", "同值段", "段数"))
+        for t, m in rows:
+            print("%-10s %8.4f %8.4f %8d %8d"
+                  % ("-" if t is None else "%.2f" % t, m["near_black_frac"],
+                     m["near_white_frac"], m["band_longest"], m["band_runs"]))
         for t, got in notes:
             fails = [x for lv, x in got if lv == "fail"]
             infos = [x for lv, x in got if lv == "info"]

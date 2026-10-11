@@ -29,6 +29,10 @@
   编码后按 -progress 的 frame 计数逐批核对, 再对拼接结果核一次 nb_read_frames,
     两者都必须等于计划帧数, 不一致即判定残片并拒绝交付 (退出码 8)
 
+成片流信息硬闸: 编码时必须显式写出 bt709 三个色彩标签与限幅范围, 交付前对成片回读一次;
+音画必须等长, 不等长在平台上表现为黑尾或静音尾. 任一项不合格 (退出码 9).
+标签与 -g/-keyint_min 也参与拼接一致性: 各批参数不一致会在接缝处掉帧或闪一下.
+
 状态文件 (缺省是脚本同目录的 assemble_state.json) 每完成一批原子写入一次, 内容含配置快照,
 批次表, 当前阶段, 已完成帧数与 pid; 重跑时自动跳过已完成批次, 配置与上次不一致时拒绝续跑,
 要重来必须显式加 --restart. --redo N 用来重做指定批次, 源帧改过时必须重编对应批次,
@@ -36,7 +40,7 @@
 
 退出码: 0 成功; 2 用法错误; 3 等待用户二次确认; 4 探测判定应拦截; 5 真峰不合格;
         6 编码或混音失败; 7 状态文件与本次配置不一致; 8 帧完整性不合格 (残帧或帧数不足);
-        130 被中断 (断点已保留)
+        9 成片流信息不合格 (色彩标签或音画等长); 130 被中断 (断点已保留)
 """
 import argparse
 import json
@@ -152,6 +156,46 @@ def probe_frame_count(path):
         return None
     m = re.search(r"(\d+)", out)
     return int(m.group(1)) if m else None
+
+
+def probe_stream_tags(path):
+    """
+    回读成片视频流的色彩标签与像素格式
+
+    编码命令里显式写了 bt709 才算数: 不写时由 ffmpeg 按分辨率推断, 推断结果随编码器与
+    滤镜链变化, 现象是"本机看着正常, 换台机器或上传到平台后整体偏色发灰"
+    """
+    code, out = run([FFPROBE, "-v", "error", "-select_streams", "v:0",
+                     "-show_entries",
+                     "stream=pix_fmt,color_range,color_space,color_primaries,color_transfer",
+                     "-of", "default=nw=1", path])
+    return out.strip() if code == 0 else None
+
+
+def stream_tag_gaps(tags):
+    """列出成片里不是 bt709 的色彩标签; 返回空列表才算合格"""
+    want = ("color_space", "color_primaries", "color_transfer")
+    missing = [k for k in want if not re.search(r"^%s=bt709$" % k, tags or "", re.M)]
+    if not re.search(r"^color_range=tv$", tags or "", re.M):
+        missing.append("color_range")
+    return missing
+
+
+def probe_av_durations(path):
+    """
+    分离读出视频流与音频流的时长, 音画等长只能在成片上核
+
+    混音时已经带了 -shortest, 但容器的流时长会各自取整到自己的时间基, 所以判据留一帧
+    容差. 平台上出现黑尾或静音尾的根因就是音轨比视频长, 而在中间产物上看不出来
+    """
+    def one(sel):
+        code, out = run([FFPROBE, "-v", "error", "-select_streams", sel,
+                         "-show_entries", "stream=duration", "-of", "csv=p=0", path])
+        if code != 0:
+            return None
+        m = re.search(r"(\d+(?:\.\d+)?)", out)
+        return float(m.group(1)) if m else None
+    return one("v:0"), one("a:0")
 
 
 def plan_batches(total, n):
@@ -284,22 +328,55 @@ def encode_filter(cfg):
     return "noise=alls=%d:allf=t,format=yuv420p" % cfg["noise"]
 
 
+def color_args():
+    """
+    显式写出 bt709 三个色彩标签与限幅范围
+
+    不写时由 ffmpeg 按分辨率自动推断, 推断结果随编码器与滤镜链变化, 表现为"本机看着正常,
+    换台机器或上传到平台后整体偏色发灰". 三个标签必须逐段与成片完全一致, 否则拼接处会变色
+    成片阶段走 -c:v copy, 标签由这里写入的 VUI 直接带过去, 不需要在混音步骤重复一次
+    """
+    return ["-colorspace", "bt709", "-color_primaries", "bt709",
+            "-color_trc", "bt709", "-color_range", "tv"]
+
+
+def gop_args(cfg, name):
+    """
+    固定 GOP, 让各批次的关键帧落在可预测的帧号上
+
+    分批路线靠 concat demuxer 加 -c copy 拼接, 各批参数不一致会在接缝处掉帧或闪一下;
+    -sc_threshold 0 关掉场景切换自动插关键帧, 它只在 libx264 上有确定语义, 硬件编码器
+    按自己的 GOP 策略走, 只给通用的 -g 与 -keyint_min
+    """
+    k = str(int(round(cfg["fps"])))
+    args = ["-g", k, "-keyint_min", k]
+    if name == "libx264":
+        args += ["-sc_threshold", "0"]
+    return args
+
+
 def encoder_args(cfg, lim):
     """
     把 CPU 侧的 preset 与 crf 映射到所选编码器
 
     换编码器不等于给同一个编码器加开关: x264 是纯 CPU 编码器, CUDA 加速不了它; 用 NVENC
     是换成另一个编码器, 画质与体积都会变, 换完必须用下面的 PSNR 质检重新量一遍
+
+    画面全部由代码绘制, 平面色块与细线条占多数, 因此 libx264 缺省给 -tune animation
+    (加大去块滤波与参考帧数, 对平坦区域更省码率); 换 tune 会改变体积与 PSNR, 换之前先跑
+    bench_encode.py 对着无损参考重量一遍
     """
     name = cfg["encoder"]
     preset = lim["preset"]
     if name == "libx264":
-        return ["-c:v", "libx264", "-preset", preset, "-crf", str(cfg["crf"])]
+        return ["-c:v", "libx264", "-preset", preset, "-crf", str(cfg["crf"]),
+                "-tune", "animation", "-profile:v", "high"]
     if name.endswith("_nvenc"):
         table = {"slow": "p7", "medium": "p6", "fast": "p5", "veryfast": "p4"}
         # NVENC 用 vbr 加 cq, 并把目标码率交给 cq 决定, 否则它按固定码率跑, 体积会失控
-        return ["-c:v", name, "-preset", table.get(preset, "p6"),
-                "-rc", "vbr", "-cq", str(cfg["crf"]), "-b:v", "0"]
+        # 注意 cq 与 crf 不是同一标度: 这里按本机实测直接映射, 换显卡世代必须重新标定
+        return ["-c:v", name, "-preset", table.get(preset, "p6"), "-tune", "hq",
+                "-rc", "vbr", "-cq", str(cfg["crf"]), "-b:v", "0", "-profile:v", "high"]
     if name.endswith("_qsv"):
         return ["-c:v", name, "-preset", "medium", "-global_quality", str(cfg["crf"])]
     if name.endswith("_amf"):
@@ -324,8 +401,8 @@ def encode_batch(cfg, lim, batch, seg_path, state, state_path):
            "-start_number", str(start),
            "-i", cfg["pattern"],
            "-frames:v", str(count),
-           "-vf", encode_filter(cfg)] + encoder_args(cfg, lim) + [
-           "-threads", str(lim["threads"]), "-pix_fmt", "yuv420p",
+           "-vf", encode_filter(cfg)] + encoder_args(cfg, lim) + gop_args(cfg, cfg["encoder"]) + [
+           "-threads", str(lim["threads"]), "-pix_fmt", "yuv420p"] + color_args() + [
            "-movflags", "+faststart",
            "-progress", "pipe:1", "-nostats", seg_path]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -810,6 +887,36 @@ def main(argv=None):
         if lufs is not None:
             print("集成响度: %s LUFS (目标 %s)" % (lufs, cfg["lufs"]))
 
+        # 成片流信息硬闸: 色彩标签与音画等长都在成片这一层才能核
+        tags = probe_stream_tags(cfg["out"])
+        state["stream_tags"] = tags
+        tag_failed = False
+        if tags is None:
+            print("警告: 读不到视频流的色彩标签, 该项未能核对")
+        else:
+            print(tags.replace("\n", " "))
+            gaps = stream_tag_gaps(tags)
+            if gaps:
+                print("色彩标签不合格: %s 不是 bt709" % ", ".join(gaps))
+                print("  处置: 确认编码命令显式写了色彩标签 (见 color_args), 再重编受影响的批次")
+                tag_failed = True
+            else:
+                print("色彩标签合格: bt709 三个标签与 tv 限幅范围都已写入")
+
+        vdur, adur = probe_av_durations(cfg["out"])
+        state["video_duration"] = vdur
+        state["audio_duration"] = adur
+        av_failed = False
+        if vdur is None or adur is None:
+            print("警告: 音画时长未能分离读出, 等长未核对")
+        elif abs(vdur - adur) > 1.0 / cfg["fps"]:
+            print("音画不等长: 视频流 %.3fs, 音频流 %.3fs, 差 %.3fs (容差 %.3fs)"
+                  % (vdur, adur, abs(vdur - adur), 1.0 / cfg["fps"]))
+            print("  处置: 平台侧会表现为黑尾或静音尾, 检查混音步的 -shortest 与音轨实际长度")
+            av_failed = True
+        else:
+            print("音画等长: 视频流 %.3fs, 音频流 %.3fs" % (vdur, adur))
+
         if not cfg["skip_quality_check"]:
             print("[质检] 编码前后 PSNR (高于 45dB 为视觉无损)")
             v = psnr_against_frames(cfg)
@@ -838,6 +945,14 @@ def main(argv=None):
         if peak_failed:
             print("完成但有不合格项: %s" % cfg["out"])
             return 5
+        if tag_failed or av_failed:
+            why = []
+            if tag_failed:
+                why.append("色彩标签不是 bt709")
+            if av_failed:
+                why.append("音画不等长")
+            print("成片流信息不合格 (%s): %s" % (", ".join(why), cfg["out"]))
+            return 9
         print("完成: %s" % cfg["out"])
         return 0
     except KeyboardInterrupt:

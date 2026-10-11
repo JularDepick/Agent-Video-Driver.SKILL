@@ -37,10 +37,12 @@
 import argparse
 import ctypes
 import gc
+import hashlib
 import math
 import os
 import platform
 import sys
+import tempfile
 import time
 import unicodedata
 
@@ -402,6 +404,68 @@ def whole_frame(spec, path):
     return img
 
 
+def sustained(spec, frames, out_dir):
+    """
+    持续负载实测: 连续渲染若干帧, 报每帧耗时与前后段的漂移
+
+    突发基准会骗人. 空闲时跑几帧测出来的单帧耗时, 与连续跑几百帧之后的持续耗时不是
+    一回事: 笔记本撞上功耗墙之后可以差到几倍. 而工期估算与并行度决策用的是持续值,
+    用突发值外推会把工期算短, 也会把并行度定得过高
+    """
+    path = os.path.join(out_dir, "sustained.png")
+    times = []
+    for i in range(max(1, int(frames))):
+        t0 = time.perf_counter()
+        whole_frame(spec, path)
+        times.append((time.perf_counter() - t0) * 1000.0)
+    if os.path.exists(path):
+        os.remove(path)
+
+    head = times[:5]
+    tail = times[-5:] if len(times) >= 10 else times
+    warm = sum(head) / len(head)
+    late = sum(tail) / len(tail)
+    print("")
+    print("持续负载: 连渲 %d 帧" % len(times))
+    print("  前 %2d 帧均值  %8.1f ms/帧   (突发)" % (len(head), warm))
+    print("  后 %2d 帧均值  %8.1f ms/帧   (持续)" % (len(tail), late))
+    print("  全程最慢        %8.1f ms/帧" % max(times))
+    drift = (late / warm - 1.0) * 100.0 if warm > 0 else 0.0
+    print("  前后漂移        %+7.1f %%" % drift)
+    if drift > 20.0:
+        print("  判读: 尾部明显变慢, 已经撞上功耗墙或热墙. 工期按持续值算, 别用突发值外推;")
+        print("        并行度也不要再往上加, 超过功耗墙后总吞吐不再增长, 只是每个任务都变慢")
+    else:
+        print("  判读: 前后一致, 本机没有明显的降频; 直接按全程均值估工期即可")
+    return times
+
+
+def frame_hash(spec):
+    """
+    确定性检查: 同一帧渲染两次, 比对字节是否一致
+
+    画面只依赖时间这条底线的可执行判据. 种子没定死, 或者场景读了全局状态/当前时间,
+    两次结果就会分叉; 分批并行渲染时每个进程各分叉一次, 成片里会出现随机出现的元素
+    """
+    a = whole_frame(spec, os.path.join(tempfile.gettempdir(), "_dsh_hash_a.png"))
+    b = whole_frame(spec, os.path.join(tempfile.gettempdir(), "_dsh_hash_b.png"))
+    ha = hashlib.sha256(a.tobytes()).hexdigest()
+    hb = hashlib.sha256(b.tobytes()).hexdigest()
+    for p in (os.path.join(tempfile.gettempdir(), "_dsh_hash_a.png"),
+              os.path.join(tempfile.gettempdir(), "_dsh_hash_b.png")):
+        if os.path.exists(p):
+            os.remove(p)
+    print("")
+    print("确定性: 同一帧渲两次")
+    print("  第一次 %s" % ha[:32])
+    print("  第二次 %s" % hb[:32])
+    if ha == hb:
+        print("  一致: 画面只依赖时间, 种子与全局状态都没漏")
+        return 0
+    print("  不一致: 有随机源没定死, 检查种子, 全局状态与时间相关的取值")
+    return 1
+
+
 # --------------------------------------------------------------- CLI
 def parse_size(text):
     """把 WxH 解析成两个正整数, 非法时抛 ValueError"""
@@ -426,6 +490,11 @@ def build_parser():
                    help="设计画幅 WxH, 缺省 1920x1080; 超采样倍数沿用 canvas 的 SS=2")
     p.add_argument("--out", default=os.path.join("temp", "perf_probe"),
                    help="帧写盘段的落盘目录, 缺省 temp/perf_probe, 只写这一个目录")
+    p.add_argument("--sustained", type=int, default=0, metavar="FRAMES",
+                   help="连渲 FRAMES 帧测持续负载单帧耗时 (缺省 240, 给 0 跳过); "
+                        "突发基准会骗人, 工期与并行度要用持续值")
+    p.add_argument("--hash", action="store_true",
+                   help="同一帧渲两次比对字节哈希, 核确定性")
     return p
 
 
@@ -692,7 +761,13 @@ def main():
     print("=" * 96)
     print("数字是本机本次实测值, 与本机负载有关; 换机器或换画幅必须重测")
     print("=" * 96)
-    return 0
+
+    code = 0
+    if args.sustained > 0:
+        sustained(spec, args.sustained, out_dir)
+    if args.hash:
+        code = frame_hash(spec)
+    return code
 
 
 if __name__ == "__main__":

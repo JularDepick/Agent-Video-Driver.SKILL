@@ -5,13 +5,14 @@
   python scripts/qa.py temp/frames_proj --plan temp/plan.json --out temp/qa
   python scripts/qa.py <成片.mp4> --plan temp/plan.json --out temp/qa --anchor 8 12
   python scripts/qa.py temp/short.mp4 --plan temp/plan.json --sheet 12
+   python scripts/qa.py temp/frames_proj --plan temp/plan.json --bg temp/bg.png
 
 两种输入模式
   帧序列模式: 输入是帧目录 (阶段 6 逐屏终检, 编码前跑), 每屏直接取屏内 80% 处那一帧
     的 n%05d.png, 跳过 ffprobe 与锚点对比, 时长以 plan 为准
   成片模式: 输入是 mp4 (阶段 8 客观验收, 编码后跑), 用 ffprobe 精确抽帧并做锚点对比
 
-做五件事
+做七件事
   1 成片模式: ffprobe 读实际时长与流信息, 与 plan.json 的 duration 与 fps 对照,
     偏差按帧算, 超过 1 帧判为不合格
   2 每屏抽 1 帧, 时间取 屏幕起点 + 0.8 * 屏时长, 避开入场动画未完成的那一段;
@@ -23,6 +24,13 @@
     并与该屏前后普通帧对的水平对比, 看变化是不是正好落在切点帧上;
     锚点屏前后各 3 帧算相邻帧差分, 打印成一行数列, 峰值落在切点帧上才算卡点对齐
   5 屏帧每 --sheet 张拼一页 6 列图, 每张下写 屏号与秒, 供人眼快速过一遍
+   6 传了 --bg 时, 每屏帧与该纯背景图逐像素相减, 统计显著差异像素的包围盒与最靠上的
+      那一行, 并报包围盒是否落在画幅 93% 的安全区内; 每屏一行, 打印在逐屏表之后
+   7 成片模式额外抽 t=0 那一帧报平均亮度: 平台拿首帧当缩略图, 首帧是黑的就是一张黑封面
+
+--bg 的用途: 背景是逐帧重画的纯渐变时, 拿单帧减背景剩下的就是"每帧都存在的静态叠加",
+也就是水印, 误留的调试框, 忘了删的占位文字这类东西. 包围盒贴边说明它是装饰性的版式元素,
+包围盒落在画面中间偏上且很小, 才是要人工确认的疑似幽灵文字.
 
 抽帧定位方式 (成片模式): 一律使用 `ffmpeg -i <成片> -ss <时间> -frames:v 1 -vf scale=W:-1 <输出>`.
 `-ss` 必须放在 `-i` 之后, 也就是输出侧定位. 输入侧的 `-ss` 会就近取关键帧, 抽到的可能
@@ -67,6 +75,25 @@ MAE_DUPLICATE = 0.3
 # 帧序列模式的重渲预警: 帧目录里最近这么多秒被改写过的帧超过该比例时, 逐屏表不可信
 REWRITE_WINDOW_S = 60.0
 REWRITE_FRAC = 0.05
+# 空场与平板帧的判定线. 空场指这一屏几乎没画东西 (底色铺满或漏渲); 平板帧指画面里
+# 只有灰阶没有色彩层次, 常见于"只有一层纯色底加一行灰字"的漏做配色的屏.
+# 两个判据都取或的关系: 亮度低但色数够多的图 (例如深色渐变背景) 不是空场,
+# 饱和度低但色数够多的图 (例如大范围渐变) 也不是平板帧, 只有两个维度同时塌才报
+BLANK_LUMA = 2.0
+BLANK_UNIQ = 400
+FLAT_SAT = 0.02
+FLAT_UNIQ = 3000
+# 唯一色数降采样到的宽度: 1920x1080 全量塞进 set 要几百万次哈希, 缩到 480 宽后
+# 色数的量级不变 (渐变本来就是量化出来的), 代价只有几十毫秒
+UNIQ_W = 480
+# 与纯背景差分时的显著差异阈值, 按 luma 差算; 30 约等于一圈能看出来的灰阶,
+# 低于它的差异是编码噪声与缩放插值, 报出来会淹掉真正的残留
+BG_DIFF_LUMA = 30.0
+# 安全区占画幅的比例; 包围盒整体落进去才说明这个差异是画面内的元素,
+# 越界意味着有东西贴在画幅边缘上, 编码后容易被裁掉或压变形
+SAFE_FRAC = 0.93
+# 首帧亮度下限: 平台拿成片首帧当缩略图, 全黑首帧就是一张全黑封面
+FIRST_FRAME_LUMA = 2.0
 # 与 canvas.FRAME_PATTERN 保持一致; 不 import canvas, 单独复制走也能跑
 FRAME_PATTERN = "n%05d.png"
 FONTS = (r"C:\Windows\Fonts\consola.ttf", r"C:\Windows\Fonts\consolab.ttf")
@@ -237,6 +264,39 @@ def load_rgb(path):
 
 def lum_of(a):
     return 0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]
+
+
+def uniq_colors(a, width=UNIQ_W):
+    """
+    不同的 RGB 三元组数量, 先按宽度降采样再统计
+
+    整帧直接建 set 会把几百万个像素各哈希一遍, 而色数的量级在降采样后几乎不变:
+    渐变本来就是量化出来的, 缩小一半不会凭空多出或吃掉多少色阶.
+    于是这里只花几十毫秒换一个可比的数
+    """
+    im = Image.fromarray(a.astype(np.uint8), "RGB")
+    if im.width > width:
+        h = max(1, int(round(im.height * width / float(im.width))))
+        im = im.resize((width, h), Image.NEAREST)
+    arr = np.asarray(im)
+    packed = (arr[..., 0].astype(np.uint32) << 16) | (arr[..., 1].astype(np.uint32) << 8) \
+        | arr[..., 2].astype(np.uint32)
+    return int(np.unique(packed).size)
+
+
+def mean_sat(a):
+    """
+    HSV 里 S 通道的均值 (0 到 1)
+
+    逐像素转 HSV 太慢, 这里只取 S = (max - min) / max 这一支: 它与 HSV 的 S 同值,
+    而且是纯向量运算. max 为 0 的纯黑像素 S 取 0, 与 HSV 的定义一致
+    """
+    mx = a.max(axis=2)
+    mn = a.min(axis=2)
+    s = np.zeros_like(mx)
+    nz = mx > 1e-6
+    s[nz] = (mx[nz] - mn[nz]) / mx[nz]
+    return float(s.mean())
 
 
 def mae(a, b):
@@ -447,18 +507,26 @@ def warn_if_rewriting(frames_dir):
 
 
 def screen_table(got):
-    """屏号 | 幕 | 时间 | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏的 MAE"""
+    """
+    屏号 | 幕 | 时间 | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏的 MAE | 唯一色 | 饱和度
+
+    新增的两列一律排在原有列之后: 逐屏表是给人扫的, 但已有人按列序号取数,
+    把新列插进中间会让旧取数整体错位一格
+    """
     print("")
-    print("屏号 | 幕 | 时间s | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏MAE")
+    print("屏号 | 幕 | 时间s | 帧文件 | 平均亮度 | p95 | 高亮占比 | 与上一屏MAE | 唯一色 | 饱和度")
     prev = None
     rows = []
     suspects = []
+    flats = []
     for it in got:
         a = load_rgb(it["path"])
         l = lum_of(a)
         mean = float(l.mean())
         p95 = p95_of(l)
         bright = float((l > 140).mean())
+        uniq = uniq_colors(a)
+        sat = mean_sat(a)
         d = None if prev is None else mae(a, prev)
         mark = ""
         if d is not None:
@@ -468,15 +536,24 @@ def screen_table(got):
             elif d < MAE_NEAR_SAME:
                 mark = "  <- 相邻屏几乎一样"
                 suspects.append((it["n"], d, "几乎一样"))
+        kinds = []
+        if mean < BLANK_LUMA or uniq < BLANK_UNIQ:
+            kinds.append("空场")
+        if sat < FLAT_SAT and uniq < FLAT_UNIQ:
+            kinds.append("平板")
+        if kinds:
+            mark += "  <- " + "/".join(kinds)
+            flats.append((it["n"], mean, uniq, sat, kinds))
         rows.append({"n": it["n"], "t": it["t"], "path": it["path"],
                      "mean": mean, "p95": p95, "bright": bright, "mae_prev": d,
+                     "uniq": uniq, "sat": sat,
                      "text": it["text"], "act": it.get("act", ""),
                      "act_title": it.get("act_title", ""), "scene": it.get("scene", "")})
         prev = a
-        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %8.3f | %s%s"
+        print("%4d | %s | %7.2f | %-28s | %8.1f | %5.1f | %8.3f | %s | %6d | %6.4f%s"
               % (it["n"], ("%2d" % it["act"]) if it.get("act") else " -",
                  it["t"], it["path"], mean, p95, bright,
-                 "-" if d is None else "%8.2f" % d, mark))
+                 "-" if d is None else "%8.2f" % d, uniq, sat, mark))
     if suspects:
         print("")
         print("相邻屏 MAE 自动判定 (低于 %.1f 提示几乎一样, 低于 %.1f 提示疑似重复):"
@@ -484,7 +561,96 @@ def screen_table(got):
         for n, d, kind in suspects:
             print("  屏 %d 与上一屏 MAE = %.2f, %s; 反查用 scene_module.py screen %d"
                   % (n, d, kind, n))
+    if flats:
+        print("")
+        print("空场与平板帧判定 (空场: 平均亮度 < %.1f 或 唯一色 < %d; 平板: 饱和度 < %.2f 且 唯一色 < %d):"
+              % (BLANK_LUMA, BLANK_UNIQ, FLAT_SAT, FLAT_UNIQ))
+        for n, mean, uniq, sat, kinds in flats:
+            print("  屏 %d 平均亮度 %.1f, 唯一色 %d, 饱和度 %.4f, 判定 %s; "
+                  "反查用 scene_module.py screen %d"
+                  % (n, mean, uniq, sat, "/".join(kinds), n))
     return rows
+
+
+def bg_diff_table(got, bg_path):
+    """
+    每屏帧与纯背景图逐像素相减, 报显著差异像素的包围盒, 每屏一行
+
+    背景是逐帧重画的纯渐变时, 单帧减背景剩下的就是"每帧都存在的静态叠加": 水印,
+    误留的调试框, 忘了删的占位文字. 这类缺陷在逐屏表上看不出来, 因为它的亮度与色数
+    都正常, 只有与背景差分才现形.
+    包围盒贴边通常是装饰性的版式元素 (顶杠, 页脚), 落在画面中间且很小才要人工确认;
+    所以除包围盒之外再报最靠上那一行, 顶部的孤立小团块是最常见的幽灵文字位置
+    """
+    try:
+        bg = load_rgb(bg_path)
+    except Exception as e:
+        print("")
+        print("[警告] 读不了纯背景图 %s (%s), 跳过与背景差分" % (bg_path, e))
+        return []
+    bg_l = lum_of(bg)
+    print("")
+    print("与纯背景差分: %s  %dx%d  (显著差异取 luma 差 > %.0f)"
+          % (bg_path, bg.shape[1], bg.shape[0], BG_DIFF_LUMA))
+    print("屏号 | 差异占比 | 包围盒 x0,y0,x1,y1 | 最靠上y | 安全区")
+    out = []
+    for it in got:
+        a = load_rgb(it["path"])
+        h = min(a.shape[0], bg.shape[0])
+        w = min(a.shape[1], bg.shape[1])
+        d = np.abs(lum_of(a[:h, :w]) - bg_l[:h, :w])
+        mask = d > BG_DIFF_LUMA
+        n = int(mask.sum())
+        if n == 0:
+            print("%4d | %8.4f | %-20s | %6s | %s"
+                  % (it["n"], 0.0, "(无显著差异)", "-", "-"))
+            out.append({"n": it["n"], "frac": 0.0, "box": None, "top_y": None,
+                        "in_safe": None})
+            continue
+        ys, xs = np.nonzero(mask)
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        # 安全区按各自画幅算, 帧与背景尺寸不一致时两边各按自己的边留白
+        fw = min(a.shape[1], bg.shape[1])
+        fh = min(a.shape[0], bg.shape[0])
+        mx = fw * (1.0 - SAFE_FRAC) / 2.0
+        my = fh * (1.0 - SAFE_FRAC) / 2.0
+        in_safe = (x0 >= mx and y0 >= my and x1 < fw - mx and y1 < fh - my)
+        print("%4d | %8.4f | %d,%d,%d,%d | %6d | %s"
+              % (it["n"], n / float(h * w), x0, y0, x1, y1, y0,
+                 "在区内" if in_safe else "越界"))
+        out.append({"n": it["n"], "frac": n / float(h * w),
+                    "box": [x0, y0, x1, y1], "top_y": y0, "in_safe": in_safe})
+    ghost = [r for r in out if r["box"] is not None]
+    if ghost:
+        print("")
+        print("幽灵文字排查: 上面每屏的最靠上 y 是显著差异像素里最靠上的那一行;")
+        print("  该 y 很小 (贴顶) 且差异占比很小 (不足 1%) 时, 多半是忘了删的占位文字或调试框;")
+        print("  差异占比很大时是这一屏本来就该有内容, 不用管; 反查用 scene_module.py screen N")
+    return out
+
+
+def first_frame_check(video, outdir, fps):
+    """
+    成片模式额外抽 t=0 那一帧报平均亮度
+
+    平台一律拿成片首帧当缩略图, 而入场动画的起点常常是黑的: 那张封面就是纯黑一块,
+    在列表里跟"渲染失败"没有区别. 这一项不看别的, 只回答首帧是不是黑的
+    """
+    path = os.path.join(outdir, "screen00-first.png")
+    ok, err = grab(video, 0.0, path, SCREEN_W, fps)
+    if not ok:
+        print("")
+        print("[警告] 首帧抽帧失败: %s" % err)
+        return None
+    mean = float(lum_of(load_rgb(path)).mean())
+    print("")
+    print("首帧 (t=0) 平均亮度 %.1f  [%s]"
+          % (mean, "正常" if mean >= FIRST_FRAME_LUMA else "首帧是黑的, 平台会拿它当缩略图"))
+    if mean < FIRST_FRAME_LUMA:
+        print("  平台拿成片首帧当缩略图, 全黑首帧就是一张全黑封面; "
+              "给片头加一帧有内容的起始态, 或把入场动画的起点抬亮")
+    return {"path": path, "mean": mean}
 
 
 def anchor_check(video, anchor_n, screens, outdir, fps, dur):
@@ -552,6 +718,8 @@ def main(argv=None):
     ap.add_argument("--anchor", nargs="*", type=int, default=[], help="锚点屏号, 可多个, 仅成片模式")
     ap.add_argument("--sheet", type=int, default=24, help="每页拼图的屏帧数")
     ap.add_argument("--fps", type=float, default=30.0, help="计划缺 fps 时的兜底帧率")
+    ap.add_argument("--bg", default=None,
+                    help="纯背景图片路径; 给定时每屏帧与它逐像素相减, 报显著差异的包围盒")
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
 
     frames_mode = os.path.isdir(a.video)
@@ -560,6 +728,9 @@ def main(argv=None):
         return 2
     if not os.path.exists(a.plan):
         print("找不到计划: %s" % a.plan)
+        return 2
+    if a.bg and not os.path.exists(a.bg):
+        print("找不到纯背景图: %s" % a.bg)
         return 2
     if a.sheet <= 0:
         print("--sheet 必须是正数, 收到 %d" % a.sheet)
@@ -614,6 +785,10 @@ def main(argv=None):
         print("[警告] 没有 Pillow, 跳过亮度读数, 锚点 MAE 与拼图")
     else:
         rows = screen_table(got)
+        if a.bg:
+            bg_diff_table(got, a.bg)
+        if not frames_mode:
+            first_frame_check(a.video, a.out, fps)
         anchors = []
         for n in a.anchor:
             r = anchor_check(a.video, n, plan["screens"], a.out, fps, dur)
